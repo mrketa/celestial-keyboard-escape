@@ -1,6 +1,6 @@
 --!strict
 
-local BASE_URL = "https://raw.githubusercontent.com/mrketa/celestial-keyboard-escape/main/"
+local BASE_URL = "https://raw.githubusercontent.com/mrketa/celestial-keyboard-escape/a21a64d/"
 local ENTRY_PATH = "potassium-next/entry.lua"
 local MODULES = {
 	["potassium-next/entry.lua"] = "181e51a057e138e505f7ed9ff04e01a6904edddd99e94919657e0ca8f008e014",
