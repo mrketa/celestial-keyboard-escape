@@ -2026,24 +2026,38 @@ end
 function Menu:_reconcileStageLoop()
 	local stageKey = self._stageLoopKey
 	local snapshot = self._lastSnapshot
-	if not stageKey or self._destroyed or self._destroying or self._stale or type(snapshot) ~= "table" then
-		if self._stale then
-			self:_clearStageLoop()
-		end
+	if not stageKey or self._destroyed or self._destroying or type(snapshot) ~= "table" then
+		return
+	end
+	if self._stale then
 		return
 	end
 	local state = snapshot.state
 	local owner = snapshot.owner
-	if state == "error" or state == "ejecting" or state == "ejected" or (owner ~= nil and owner ~= stageKey) then
+	if state == "error" or state == "ejecting" or state == "ejected" then
 		self:_clearStageLoop()
 		return
 	end
-	local routeSnapshot = snapshot[stageKey]
-	if self._stageLoopStarted and type(routeSnapshot) == "table" and routeSnapshot.status == "error" then
-		self:_clearStageLoop()
-		self._localErrorCode = cleanCode(routeSnapshot.lastError, stageKey .. "_loop_failed")
-		self:_updateControls(snapshot)
+	if owner ~= nil and owner ~= stageKey then
 		return
+	end
+	local routeSnapshot = snapshot[stageKey]
+	if self._stageLoopStarted and type(routeSnapshot) == "table" then
+		if routeSnapshot.status == "error" then
+			self:_clearStageLoop()
+			self._localErrorCode = cleanCode(routeSnapshot.lastError, stageKey .. "_loop_failed")
+			self:_updateControls(snapshot)
+			return
+		end
+		if
+			routeSnapshot.status == "completed"
+			or routeSnapshot.status == "stopped"
+			or routeSnapshot.status == "idle"
+		then
+			self._stageLoopStarted = false
+		else
+			return
+		end
 	end
 	if
 		self._busy

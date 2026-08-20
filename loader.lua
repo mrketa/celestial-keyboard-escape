@@ -3,10 +3,10 @@
 local BASE_URL = "https://raw.githubusercontent.com/mrketa/celestial-keyboard-escape/main/"
 local ENTRY_PATH = "potassium-next/entry.lua"
 local MODULES = {
-	["potassium-next/entry.lua"] = "15cda30d0b0a4490bd96334baf7499d02776f33813a151617b1ae5e653c7b01c",
+	["potassium-next/entry.lua"] = "181e51a057e138e505f7ed9ff04e01a6904edddd99e94919657e0ca8f008e014",
 	["potassium-next/runtime.lua"] = "0cc933d63e099b17cef23205b6b1878e9bc647cf58e290cfb6cd9318fc10ee0d",
 	["potassium-next/trace.lua"] = "2ac5d32a5f0fe6ece988d26ab01085f230c90fe09a0b1ca1b0b96e46b4caa555",
-	["potassium-next/menu.lua"] = "dd99e42aca38e7e839adb728bfe4f3b9a09d4f638769d8ef7de8c3bcf934cfd0",
+	["potassium-next/menu.lua"] = "47c241abdfd609480a570696532c463e9015ec99903df917a536576e2150e1a4",
 	["potassium-next/world3_route.lua"] = "9d913ddd869e4f9b70acd949dbeec32937fab6834e6e360e612ba5e8ac1b887e",
 	["potassium-next/world3_routes.lua"] = "05badb3613d4aa3a43cd0bede0ff40a7b0e34416d11162963e327c0a943a4196",
 	["potassium-next/movement.lua"] = "643a13d2f79d3a2114f99d16721717a05a1d097c0de6d73f092663b44c4cdff1",
