@@ -66,4 +66,16 @@ local chunk, compileError = loadstring(downloaded[ENTRY_PATH], "@potassium-next/
 if type(chunk) ~= "function" then
 	loaderError("compile_failed:" .. tostring(compileError))
 end
-return chunk()
+local executed, runtimeOrError = pcall(chunk)
+if not executed then
+	loaderError("runtime_failed:" .. tostring(runtimeOrError))
+end
+local environmentOk, environment = pcall(getgenv)
+if
+	type(runtimeOrError) ~= "table"
+	or not environmentOk
+	or type(environment) ~= "table"
+	or environment.PotassiumNextRuntime ~= runtimeOrError
+then
+	loaderError("runtime_export_invalid")
+end
