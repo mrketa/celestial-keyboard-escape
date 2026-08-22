@@ -1,16 +1,16 @@
 --!strict
 
-local BASE_URL = "https://raw.githubusercontent.com/mrketa/celestial-keyboard-escape/a21a64d/"
+local BASE_URL = "https://raw.githubusercontent.com/mrketa/celestial-keyboard-escape/2f1f442/"
 local ENTRY_PATH = "potassium-next/entry.lua"
 local MODULES = {
-	["potassium-next/entry.lua"] = "181e51a057e138e505f7ed9ff04e01a6904edddd99e94919657e0ca8f008e014",
-	["potassium-next/runtime.lua"] = "0cc933d63e099b17cef23205b6b1878e9bc647cf58e290cfb6cd9318fc10ee0d",
+	["potassium-next/entry.lua"] = "257799e49bd6013024ec90f3cec2b9a70397dddbdccd2c0461edca5a6bf8866e",
+	["potassium-next/runtime.lua"] = "dc030e245ecdc81ece3303978849c795f468eb23caa45b212ba5e0effa705283",
 	["potassium-next/trace.lua"] = "2ac5d32a5f0fe6ece988d26ab01085f230c90fe09a0b1ca1b0b96e46b4caa555",
-	["potassium-next/menu.lua"] = "47c241abdfd609480a570696532c463e9015ec99903df917a536576e2150e1a4",
+	["potassium-next/menu.lua"] = "e57cbe848466abe572ffc07bddbf1ab169512544f33fe05cb9bad3423581dda3",
 	["potassium-next/world3_route.lua"] = "9d913ddd869e4f9b70acd949dbeec32937fab6834e6e360e612ba5e8ac1b887e",
 	["potassium-next/world3_routes.lua"] = "05badb3613d4aa3a43cd0bede0ff40a7b0e34416d11162963e327c0a943a4196",
 	["potassium-next/movement.lua"] = "643a13d2f79d3a2114f99d16721717a05a1d097c0de6d73f092663b44c4cdff1",
-	["potassium-next/event_collectors.lua"] = "09f0bbb595ef1d06ed9468c418187ff3a52c2066723ad0f3effdaf052759a100",
+	["potassium-next/event_collectors.lua"] = "0a99b98728d051a244dc554c507e05e7e3897d58d081f07e377f7a92e291d40b",
 	["potassium-next/stage1.lua"] = "f3473a8e30382ba3932926ee6b03a2d79a4e230527e08b3ac5b9d6b04f03bd24",
 	["potassium-next/stage5_diagnostics.lua"] = "0c47834a35e12c466f74879bb7521bd69a876eb7bdf00821a1c81e7816edfa61",
 	["potassium-next/motion_probe.lua"] = "b1a31fa87a98c93a2b668011c79aae264895dacfae49a33ea2463e8ef5d1f978",
