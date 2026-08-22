@@ -3,11 +3,22 @@ local CollectionService = game:GetService("CollectionService")
 
 -- One serialized scheduler. Collection is touch-driven except for the source-verified Coin Battle acknowledgement.
 local EventCollectors = {}
-local KINDS = table.freeze({ "summer", "battle", "egg", "disco", "soccer", "rings", "masked", "overdrive" })
-local RETRY =
-	table.freeze({ summer = 2, battle = 2, egg = 2, disco = 2, soccer = 2, rings = 2, masked = 2, overdrive = 2 })
+local KINDS =
+	table.freeze({ "summer", "battle", "egg", "disco", "soccer", "rings", "masked", "overdrive", "fab", "survival" })
+local RETRY = table.freeze({
+	summer = 2,
+	battle = 2,
+	egg = 2,
+	disco = 2,
+	soccer = 2,
+	rings = 2,
+	masked = 2,
+	overdrive = 2,
+	fab = 2,
+	survival = 2,
+})
 local MOVE_HORIZON, MOVE_STEP, CORRECTION_LIMIT, POLL = 30, 1 / 30, 12, 0.05
-local BATTLE_REQUEST_INTERVAL = 0.13
+local BATTLE_REQUEST_INTERVAL, FAB_ZONE_COOLDOWN, SURVIVAL_REPLAN_INTERVAL = 0.13, 1, 0.5
 
 local function routePoint(name: string, position: Vector3, options: { [string]: any }?): { [string]: any }
 	local value = {
@@ -748,85 +759,437 @@ local function maskedTarget(h: any, initialBest: any): (any, boolean)
 	return best, present
 end
 
-local function activeCruzVsSplinkMap(): Instance?
+local function activeFabMap(): Instance?
 	local admin = workspace:FindFirstChild("AdminAbuse")
 	local maps = admin and admin:FindFirstChild("Map")
-	return maps and maps:FindFirstChild("CruzVsSplinkAdminAbuse_Live")
-end
-
-local function chaseZone(map: Instance): BasePart?
-	local zone = map:FindFirstChild("ChaseZone", true)
-	return part(zone) and zone or nil
-end
-
-local function chaserRoot(object: Instance): BasePart?
-	if object:IsA("BasePart") then
-		return object
+	if not maps then
+		return nil
 	end
-	local rootPart = object:FindFirstChild("HumanoidRootPart", true)
-	return part(rootPart) and rootPart or nil
+	for _, candidate in ipairs(CollectionService:GetTagged("FABADMINABUSE_V1_MAP")) do
+		if candidate:IsA("Model") and candidate:IsDescendantOf(maps) then
+			return candidate
+		end
+	end
+	return nil
 end
 
-local function survivalAction(h: any): boolean
-	local map = activeCruzVsSplinkMap()
-	local zone = map and chaseZone(map)
-	if not map or not zone then
+local function fabZones(map: Instance): { any }
+	local zones = {}
+	local structures = map:FindFirstChild("AllStructures", true)
+	if not structures then
+		return zones
+	end
+	for _, structure in ipairs(structures:GetChildren()) do
+		local zone = structure:FindFirstChild("Zone")
+		local anchorIn = structure:FindFirstChild("AnchorIN")
+		local anchorOut = structure:FindFirstChild("AnchorOUT")
+		if structure:IsA("Model") and part(zone) and part(anchorIn) and part(anchorOut) then
+			table.insert(zones, { zone = zone, anchorIn = anchorIn, anchorOut = anchorOut, id = key("fab", structure) })
+		end
+	end
+	return zones
+end
+
+local function fabCourse(entry: any): { Vector3 }?
+	local surfaces = {}
+	for _, object in ipairs(entry.zone.Parent:GetDescendants()) do
+		if
+			object:IsA("BasePart")
+			and object.CanCollide
+			and object ~= entry.zone
+			and object ~= entry.anchorIn
+			and object ~= entry.anchorOut
+			and not string.find(string.lower(object.Name), "decor", 1, true)
+		then
+			local alongX = object.Size.X >= object.Size.Z
+			local length = alongX and object.Size.X or object.Size.Z
+			local steps = math.max(math.ceil(length / 20), 1)
+			for step = 0, steps do
+				local offset = -length * 0.5 + length * (step / steps)
+				local localPosition = alongX and Vector3.new(offset, object.Size.Y * 0.5 + 2.5, 0)
+					or Vector3.new(0, object.Size.Y * 0.5 + 2.5, offset)
+				table.insert(surfaces, object.CFrame:PointToWorldSpace(localPosition))
+				if #surfaces >= 256 then
+					break
+				end
+			end
+		end
+		if #surfaces >= 256 then
+			break
+		end
+	end
+	if #surfaces == 0 then
+		return nil
+	end
+	local route, used, current = {}, {}, entry.anchorIn.Position
+	while #route < 128 do
+		local nearestIndex, nearestDistance, currentToExit =
+			nil, math.huge, (entry.anchorOut.Position - current).Magnitude
+		for index, center in ipairs(surfaces) do
+			if not used[index] then
+				local distance = (center - current).Magnitude
+				if
+					distance <= 80
+					and (entry.anchorOut.Position - center).Magnitude <= currentToExit + 12
+					and distance < nearestDistance
+				then
+					nearestIndex, nearestDistance = index, distance
+				end
+			end
+		end
+		if not nearestIndex then
+			break
+		end
+		current = surfaces[nearestIndex]
+		used[nearestIndex] = true
+		table.insert(route, current)
+	end
+	if #route == 0 or (entry.anchorOut.Position - current).Magnitude > 80 then
+		return nil
+	end
+	return route
+end
+
+local function recordWinsDelta(h: any, kind: string, baselineField: string, eligible: boolean?): boolean
+	local value = wins(h)
+	if not value then
 		return false
 	end
-	local r = root(h)
-	if not r then
-		return true
+	local previous = h[baselineField]
+	h[baselineField] = value.Value
+	if eligible == false or type(previous) ~= "number" or value.Value <= previous then
+		return false
 	end
+	h.counts[kind] += 1
+	h.counts.total += 1
+	emit(h, "collector_result", {
+		collectorKind = kind,
+		result = "confirmed",
+		count = h.counts[kind],
+		total = h.counts.total,
+	})
+	return true
+end
+
+local function beginSpecialMovement(h: any, r: BasePart)
 	if not h.home then
 		h.home = r.Position
 	end
 	h.atHome = false
-	h.travelKind = "battle"
-	h.current = "Survival Chase"
+end
 
-	local chasers = {}
-	for _, object in ipairs(CollectionService:GetTagged("AABossNpc")) do
-		if object:IsDescendantOf(map) then
-			local chaser = chaserRoot(object)
-			if chaser then
-				table.insert(chasers, chaser)
-			end
+local function fabAction(h: any): boolean
+	if not h.enabled.fab then
+		return false
+	end
+	local map = activeFabMap()
+	if h.fabMap ~= map then
+		h.fabMap = map
+		h.fabProgress, h.fabExit, h.fabPendingOut = nil, nil, nil
+		h.fabCompleted, h.fabCourse, h.fabWins = {}, nil, nil
+		h.fabRewardEligible, h.fabCheckpointIndex = false, 0
+		if map then
+			h.survivalWins, h.survivalProgress, h.survivalProgressAt = nil, 0, nil
 		end
 	end
-	local bestPosition = zone.Position
-	local bestClearance = -1
-	for _, xScale in ipairs({ -0.35, 0, 0.35 }) do
-		for _, zScale in ipairs({ -0.35, 0, 0.35 }) do
-			local candidate = zone.CFrame:PointToWorldSpace(
-				Vector3.new(zone.Size.X * xScale, -zone.Size.Y * 0.5 + 3, zone.Size.Z * zScale)
-			)
-			local clearance = math.huge
-			for _, chaser in ipairs(chasers) do
-				local delta = chaser.Position - candidate
-				clearance = math.min(clearance, Vector3.new(delta.X, 0, delta.Z).Magnitude)
-			end
-			if clearance > bestClearance then
-				bestPosition = candidate
-				bestClearance = clearance
-			end
-		end
+	local zones = map and fabZones(map)
+	if not map then
+		h.fabWins = nil
+		return false
 	end
-	local localPosition = zone.CFrame:PointToObjectSpace(r.Position)
-	local inside = math.abs(localPosition.X) <= zone.Size.X * 0.48
-		and math.abs(localPosition.Y) <= zone.Size.Y * 0.48
-		and math.abs(localPosition.Z) <= zone.Size.Z * 0.48
-	local nearestThreat = math.huge
-	for _, chaser in ipairs(chasers) do
-		local delta = chaser.Position - r.Position
-		nearestThreat = math.min(nearestThreat, Vector3.new(delta.X, 0, delta.Z).Magnitude)
-	end
-	if inside and nearestThreat >= 35 then
-		halt(r)
-		h.status = string.format("Surviving chase (nearest threat %.0f studs)", nearestThreat)
+	if not zones or #zones == 0 then
+		h.status = "Waiting for generated Fab course"
 		return true
 	end
-	h.status = string.format("Evading chase (safe clearance %.0f studs)", bestClearance)
-	teleportDirect(h, "battle", bestPosition, "survival_safe", false)
+	local r = root(h)
+	local humanoid = r and r.Parent and r.Parent:FindFirstChildOfClass("Humanoid")
+	if not r or not humanoid then
+		return true
+	end
+	beginSpecialMovement(h, r)
+	h.travelKind = "fab"
+	h.current = "Fab Boss checkpoint course"
+	if recordWinsDelta(h, "fab", "fabWins", h.fabRewardEligible) then
+		h.fabRewardEligible = false
+	end
+
+	local prior = h.fabProgress
+	local candidate: any, candidateDistance, leaving = nil, math.huge, false
+	if h.fabPendingOut then
+		for _, entry in ipairs(zones) do
+			if entry.id == h.fabPendingOut then
+				candidate, leaving = entry, true
+				break
+			end
+		end
+	else
+		for _, entry in ipairs(zones) do
+			if entry.id ~= prior and not h.fabCompleted[entry.id] then
+				local source = prior and h.fabExit or r.Position
+				local distance = (entry.anchorIn.Position - source).Magnitude
+				if distance < candidateDistance then
+					candidate, candidateDistance = entry, distance
+				end
+			end
+		end
+	end
+	if not candidate then
+		h.status = "Waiting for a generated Fab checkpoint"
+		return true
+	end
+	local course = h.fabCourse and h.fabCourse.id == candidate.id and h.fabCourse.points or fabCourse(candidate)
+	if not course then
+		h.fabCourse = nil
+		h.status = "Generated Fab checkpoint has no traversable geometry"
+		return true
+	end
+	if not h.fabCourse or h.fabCourse.id ~= candidate.id then
+		h.fabCourse = { id = candidate.id, points = course }
+	end
+	if not leaving then
+		if prior and candidateDistance > 32 then
+			h.status = "Waiting for the next generated Fab checkpoint"
+			return true
+		end
+		if prior and os.clock() < h.fabNextZoneAt then
+			h.status = "Respecting Fab checkpoint cooldown"
+			return true
+		end
+		if (candidate.anchorIn.Position - r.Position).Magnitude > 32 then
+			h.status = "Waiting for a reachable generated Fab checkpoint"
+			return true
+		end
+		local entryDelta = candidate.anchorIn.Position - r.Position
+		if entryDelta.Y > 1 or Vector3.new(entryDelta.X, 0, entryDelta.Z).Magnitude > 10 then
+			humanoid.Jump = true
+		end
+		humanoid:MoveTo(candidate.anchorIn.Position)
+		local enteredAt = os.clock() + 3
+		while liveKind(h, "fab") and os.clock() < enteredAt do
+			r = root(h)
+			if not r or not candidate.zone.Parent then
+				return true
+			end
+			if (r.Position - candidate.anchorIn.Position).Magnitude <= 5 then
+				h.fabPendingOut = candidate.id
+				h.fabRewardEligible = h.fabCheckpointIndex + 1 >= 2
+				h.fabNextZoneAt = os.clock() + FAB_ZONE_COOLDOWN
+				return true
+			end
+			task.wait(POLL)
+		end
+		return true
+	end
+	h.status = "Traversing Fab checkpoint geometry"
+	for _, destination in ipairs(course) do
+		r = root(h)
+		if not r or not candidate.zone.Parent then
+			return true
+		end
+		local delta = destination - r.Position
+		if delta.Y > 1 or Vector3.new(delta.X, 0, delta.Z).Magnitude > 10 then
+			humanoid.Jump = true
+		end
+		humanoid:MoveTo(destination)
+		local deadline = os.clock() + math.min(math.max(delta.Magnitude / math.max(movementSpeed(h) or 1, 1) + 1, 1), 4)
+		while liveKind(h, "fab") and os.clock() < deadline do
+			r = root(h)
+			if not r or not candidate.zone.Parent then
+				return true
+			end
+			if (r.Position - destination).Magnitude <= 5 then
+				break
+			end
+			task.wait(POLL)
+		end
+		if not r or (r.Position - destination).Magnitude > 5 then
+			return true
+		end
+	end
+	r = root(h)
+	if not r or (candidate.anchorOut.Position - r.Position).Magnitude > 32 then
+		return true
+	end
+	local delta = candidate.anchorOut.Position - r.Position
+	if delta.Y > 1 or Vector3.new(delta.X, 0, delta.Z).Magnitude > 10 then
+		humanoid.Jump = true
+	end
+	humanoid:MoveTo(candidate.anchorOut.Position)
+	local exitDeadline = os.clock() + 4
+	while liveKind(h, "fab") and os.clock() < exitDeadline do
+		r = root(h)
+		if not r or not candidate.zone.Parent then
+			return true
+		end
+		if (candidate.anchorOut.Position - r.Position).Magnitude <= 5 then
+			h.fabProgress, h.fabExit = candidate.id, candidate.anchorOut.Position
+			h.fabCheckpointIndex += 1
+			h.fabCompleted[candidate.id], h.fabPendingOut, h.fabCourse = true, nil, nil
+			h.status = "Fab checkpoint completed"
+			return true
+		end
+		task.wait(POLL)
+	end
+	return true
+end
+
+local function survivalBounds(): { BasePart }
+	local bounds = {}
+	local admin = workspace:FindFirstChild("AdminAbuse")
+	local maps = admin and admin:FindFirstChild("Map")
+	if not maps then
+		return bounds
+	end
+	for _, container in ipairs(maps:GetDescendants()) do
+		if container.Name == "SurvivalChaserBounds" then
+			for _, object in ipairs(container:GetDescendants()) do
+				if object.Name == "ZonePart" and object:IsA("BasePart") then
+					table.insert(bounds, object)
+				end
+			end
+		end
+	end
+	return bounds
+end
+
+local function survivalChasers(): { BasePart }
+	local chasers = {}
+	for _, object in ipairs(CollectionService:GetTagged("AABossNpc")) do
+		if object:IsA("Model") and object:GetAttribute("ArchetypeId") == "SurvivalChaser" then
+			local candidate = object:FindFirstChild("HumanoidRootPart") or object.PrimaryPart
+			if part(candidate) and candidate:IsDescendantOf(workspace) then
+				table.insert(chasers, candidate)
+			end
+		end
+	end
+	return chasers
+end
+
+local function pointInside(object: BasePart, position: Vector3, scale: number): boolean
+	local localPosition = object.CFrame:PointToObjectSpace(position)
+	return math.abs(localPosition.X) <= object.Size.X * scale
+		and math.abs(localPosition.Y) <= object.Size.Y * scale
+		and math.abs(localPosition.Z) <= object.Size.Z * scale
+end
+
+local function floorBacked(position: Vector3, raycastParams: RaycastParams): Vector3?
+	local hit = workspace:Raycast(position + Vector3.new(0, 12, 0), Vector3.new(0, -30, 0), raycastParams)
+	return hit and hit.Instance:IsA("BasePart") and hit.Position + Vector3.new(0, 3, 0) or nil
+end
+
+local function survivalAction(h: any): boolean
+	if not h.enabled.survival then
+		return false
+	end
+	local bounds, chasers = survivalBounds(), survivalChasers()
+	local boundsSource = bounds[1] and bounds[1].Parent
+	if h.survivalBoundsSource ~= boundsSource then
+		h.survivalBoundsSource = boundsSource
+		h.survivalWins, h.survivalGoal, h.survivalProgress, h.survivalProgressAt = nil, nil, 0, nil
+		h.survivalReplanAt = 0
+	end
+	if #bounds == 0 then
+		h.survivalBoundsSource, h.survivalReplanAt = nil, 0
+		h.survivalWins, h.survivalGoal, h.survivalProgress, h.survivalProgressAt = nil, nil, 0, nil
+		return false
+	end
+	local r = root(h)
+	local humanoid = r and r.Parent and r.Parent:FindFirstChildOfClass("Humanoid")
+	if not r or not humanoid then
+		return true
+	end
+	h.travelKind = "survival"
+	h.current = "Survival Chase"
+	local now = os.clock()
+	local inside = false
+	for _, bound in ipairs(bounds) do
+		if pointInside(bound, r.Position, 0.48) then
+			inside = true
+			break
+		end
+	end
+	local previousAt = h.survivalProgressAt or now
+	local elapsed = math.max(now - previousAt, 0)
+	h.survivalProgressAt = now
+	h.survivalProgress = math.clamp((h.survivalProgress or 0) + (inside and elapsed / 5 or -elapsed / 10), 0, 2)
+	if recordWinsDelta(h, "survival", "survivalWins", h.survivalProgress >= 0.98) then
+		h.survivalProgress = math.max(h.survivalProgress - 1, 0)
+	end
+
+	local excluded: { Instance } = { r.Parent }
+	for _, chaser in ipairs(chasers) do
+		if chaser.Parent then
+			table.insert(excluded, chaser.Parent)
+		end
+	end
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = excluded
+	raycastParams.RespectCanCollide = true
+	raycastParams.IgnoreWater = true
+	local bestPosition, bestClearance = nil, -1
+	for _, bound in ipairs(bounds) do
+		for _, xScale in ipairs({ -0.35, 0, 0.35 }) do
+			for _, zScale in ipairs({ -0.35, 0, 0.35 }) do
+				local raw = bound.CFrame:PointToWorldSpace(
+					Vector3.new(bound.Size.X * xScale, -bound.Size.Y * 0.5 + 12, bound.Size.Z * zScale)
+				)
+				local candidate = floorBacked(raw, raycastParams)
+				if candidate and pointInside(bound, candidate, 0.48) then
+					local clearance = math.huge
+					for _, chaser in ipairs(chasers) do
+						local delta = chaser.Position - candidate
+						clearance = math.min(clearance, Vector3.new(delta.X, 0, delta.Z).Magnitude)
+					end
+					if clearance > bestClearance then
+						bestPosition, bestClearance = candidate, clearance
+					end
+				end
+			end
+		end
+	end
+	if not bestPosition then
+		h.survivalGoal = nil
+		halt(r)
+		h.status = "Survival Chase bounds have no safe floor"
+		return true
+	end
+	local goalInside = false
+	if h.survivalGoal then
+		for _, bound in ipairs(bounds) do
+			if pointInside(bound, h.survivalGoal, 0.48) then
+				goalInside = true
+				break
+			end
+		end
+	end
+	if not goalInside then
+		h.survivalGoal = nil
+	end
+	local currentClearance = math.huge
+	for _, chaser in ipairs(chasers) do
+		local delta = chaser.Position - r.Position
+		currentClearance = math.min(currentClearance, Vector3.new(delta.X, 0, delta.Z).Magnitude)
+	end
+	if now >= h.survivalReplanAt then
+		local goalClearance = -1
+		if h.survivalGoal then
+			goalClearance = math.huge
+			for _, chaser in ipairs(chasers) do
+				local delta = chaser.Position - h.survivalGoal
+				goalClearance = math.min(goalClearance, Vector3.new(delta.X, 0, delta.Z).Magnitude)
+			end
+		end
+		if not h.survivalGoal or currentClearance < 35 or bestClearance > goalClearance + 5 then
+			h.survivalGoal = bestPosition
+		end
+		h.survivalReplanAt = now + SURVIVAL_REPLAN_INTERVAL
+	end
+	if h.survivalGoal then
+		beginSpecialMovement(h, r)
+		humanoid:MoveTo(h.survivalGoal)
+	end
+	h.status = string.format("Surviving chase (nearest threat %.0f studs)", currentClearance)
 	return true
 end
 
@@ -909,7 +1272,7 @@ local function battleAction(h: any): boolean
 	if not h.enabled.battle then
 		return false
 	end
-	return survivalAction(h) or slapAction(h)
+	return slapAction(h)
 end
 local function target(h: any): any
 	local w = workspace
@@ -1252,6 +1615,8 @@ function EventCollectors.create(options: any)
 				rings = 0,
 				masked = 0,
 				overdrive = 0,
+				fab = 0,
+				survival = 0,
 				total = 0,
 			},
 			retryAt = {},
@@ -1280,6 +1645,22 @@ function EventCollectors.create(options: any)
 			variant = nil,
 			lastError = nil,
 			nextSlapAt = 0,
+			fabWins = nil,
+			fabMap = nil,
+			fabProgress = nil,
+			fabCompleted = {},
+			fabExit = nil,
+			fabPendingOut = nil,
+			fabCourse = nil,
+			fabRewardEligible = false,
+			fabCheckpointIndex = 0,
+			fabNextZoneAt = 0,
+			survivalWins = nil,
+			survivalGoal = nil,
+			survivalBoundsSource = nil,
+			survivalReplanAt = 0,
+			survivalProgress = 0,
+			survivalProgressAt = nil,
 		},
 			nil
 	end
@@ -1307,6 +1688,24 @@ function EventCollectors.create(options: any)
 		if not h.enabled.masked then
 			h.maskedReturnPending = false
 		end
+		if not h.enabled.fab then
+			if h.travelKind == "fab" then
+				halt(root(h))
+				h.travelKind = nil
+			end
+			h.fabMap, h.fabProgress, h.fabExit, h.fabPendingOut = nil, nil, nil, nil
+			h.fabCompleted, h.fabCourse, h.fabWins, h.fabRewardEligible = {}, nil, nil, false
+			h.fabCheckpointIndex = 0
+		end
+		if not h.enabled.survival then
+			if h.travelKind == "survival" then
+				halt(root(h))
+				h.travelKind = nil
+			end
+			h.survivalGoal, h.survivalBoundsSource, h.survivalWins, h.survivalProgress, h.survivalProgressAt =
+				nil, nil, nil, 0, nil
+			h.survivalReplanAt = 0
+		end
 		return true
 	end
 
@@ -1322,68 +1721,70 @@ function EventCollectors.create(options: any)
 				continue
 			end
 			local selected: any = nil
-			local handled = false
-			if h.summerReturnPending then
-				local summerPresent
-				selected, summerPresent = summerTarget(h)
-				if not selected then
-					handled = true
-					if summerPresent then
-						h.status = h.summerOnlyStorm and "Waiting for Coin Storm" or "Waiting to retry Summer Coin"
-					else
-						returnDirectCollectorToSpawn(h, "summer", "summerReturnPending")
+			local handled = fabAction(h) or survivalAction(h)
+			if not handled then
+				if h.summerReturnPending then
+					local summerPresent
+					selected, summerPresent = summerTarget(h)
+					if not selected then
+						handled = true
+						if summerPresent then
+							h.status = h.summerOnlyStorm and "Waiting for Coin Storm" or "Waiting to retry Summer Coin"
+						else
+							returnDirectCollectorToSpawn(h, "summer", "summerReturnPending")
+						end
+					end
+				elseif h.battleReturnPending then
+					local battlePresent
+					selected, battlePresent = battleTarget(h)
+					if not selected then
+						handled = true
+						if battlePresent then
+							h.status = "Waiting to retry Coin Battle coin"
+						else
+							returnDirectCollectorToSpawn(h, "battle", "battleReturnPending")
+						end
+					end
+				elseif h.eggReturnPending then
+					local eggPresent
+					selected, eggPresent = eggTarget(h)
+					if not selected then
+						handled = true
+						if eggPresent then
+							h.status = "Waiting to retry Egg Rain egg"
+						else
+							returnDirectCollectorToSpawn(h, "egg", "eggReturnPending")
+						end
+					end
+				elseif h.overdriveReturnPending then
+					local overdrivePresent
+					selected, overdrivePresent = overdriveTarget(h, nil)
+					if not selected then
+						handled = true
+						if overdrivePresent then
+							h.status = "Waiting to retry Overdrive orb"
+						else
+							returnDirectCollectorToSpawn(h, "overdrive", "overdriveReturnPending")
+						end
+					end
+				elseif h.maskedReturnPending then
+					local maskedPresent
+					selected, maskedPresent = maskedTarget(h, nil)
+					if not selected then
+						handled = true
+						if maskedPresent then
+							h.status = "Waiting to retry Masked target"
+						else
+							returnDirectCollectorToSpawn(h, "masked", "maskedReturnPending")
+						end
 					end
 				end
-			elseif h.battleReturnPending then
-				local battlePresent
-				selected, battlePresent = battleTarget(h)
-				if not selected then
-					handled = true
-					if battlePresent then
-						h.status = "Waiting to retry Coin Battle coin"
-					else
-						returnDirectCollectorToSpawn(h, "battle", "battleReturnPending")
-					end
+				if not handled and not selected then
+					selected = target(h)
 				end
-			elseif h.eggReturnPending then
-				local eggPresent
-				selected, eggPresent = eggTarget(h)
-				if not selected then
+				if not handled and not selected and battleAction(h) then
 					handled = true
-					if eggPresent then
-						h.status = "Waiting to retry Egg Rain egg"
-					else
-						returnDirectCollectorToSpawn(h, "egg", "eggReturnPending")
-					end
 				end
-			elseif h.overdriveReturnPending then
-				local overdrivePresent
-				selected, overdrivePresent = overdriveTarget(h, nil)
-				if not selected then
-					handled = true
-					if overdrivePresent then
-						h.status = "Waiting to retry Overdrive orb"
-					else
-						returnDirectCollectorToSpawn(h, "overdrive", "overdriveReturnPending")
-					end
-				end
-			elseif h.maskedReturnPending then
-				local maskedPresent
-				selected, maskedPresent = maskedTarget(h, nil)
-				if not selected then
-					handled = true
-					if maskedPresent then
-						h.status = "Waiting to retry Masked target"
-					else
-						returnDirectCollectorToSpawn(h, "masked", "maskedReturnPending")
-					end
-				end
-			end
-			if not handled and not selected then
-				selected = target(h)
-			end
-			if not handled and not selected and battleAction(h) then
-				handled = true
 			end
 			if selected then
 				h.travelKind = selected.kind
@@ -1425,6 +1826,19 @@ function EventCollectors.create(options: any)
 		h.overdriveReturnPending = false
 		h.maskedReturnPending = false
 		h.pendingEggId = nil
+		h.fabMap = nil
+		h.fabProgress = nil
+		h.fabExit = nil
+		h.fabCompleted = {}
+		h.fabPendingOut = nil
+		h.fabCourse = nil
+		h.fabRewardEligible = false
+		h.fabCheckpointIndex = 0
+		h.survivalGoal = nil
+		h.survivalBoundsSource = nil
+		h.survivalReplanAt = 0
+		h.survivalProgress = 0
+		h.survivalProgressAt = nil
 		disconnectEggHide(h)
 		halt(root(h))
 		return true
@@ -1443,6 +1857,8 @@ function EventCollectors.create(options: any)
 			rings = h.counts.rings,
 			masked = h.counts.masked,
 			overdrive = h.counts.overdrive,
+			fab = h.counts.fab,
+			survival = h.counts.survival,
 			total = h.counts.total,
 		}
 		local speed = movementSpeed(h) or 0

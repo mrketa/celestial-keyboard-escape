@@ -12,7 +12,7 @@ local TOKENS = {
 	headerHeight = 46,
 	debugHeaderHeight = 36,
 	sidebarWidth = 170,
-	narrowBreakpoint = 500,
+	narrowBreakpoint = 600,
 	narrowSidebarHeight = 52,
 	cornerRadius = 9,
 	panelRadius = 0,
@@ -554,6 +554,8 @@ function Menu.new(options)
 		rings = false,
 		masked = false,
 		overdrive = false,
+		fab = false,
+		survival = false,
 		summerOnlyStorm = false,
 		retry = {
 			summer = 2,
@@ -564,6 +566,8 @@ function Menu.new(options)
 			rings = 2,
 			masked = 2,
 			overdrive = 2,
+			fab = 2,
+			survival = 2,
 		},
 	}
 	self._pageTransitionEpoch = 0
@@ -571,7 +575,18 @@ function Menu.new(options)
 	self._patternTweens = {}
 	self._patternAnimationActive = false
 	self._reducedMotion = reducedMotionEnabled()
-	self._eventConfigKeys = { "summer", "battle", "egg", "disco", "soccer", "rings", "masked", "overdrive" }
+	self._eventConfigKeys = {
+		"summer",
+		"battle",
+		"egg",
+		"disco",
+		"soccer",
+		"rings",
+		"masked",
+		"overdrive",
+		"fab",
+		"survival",
+	}
 	self._eventConfigDirty = false
 	self._connections = {}
 	self._shown = false
@@ -909,7 +924,7 @@ function Menu.new(options)
 		polishPanelSwitch(switch)
 		self._stageActionSwitches[key] = switch
 	end
-	local events = makePage(pageHost, "AdminEventsPage", 340)
+	local events = makePage(pageHost, "AdminEventsPage", 398)
 	self._pages.events = events
 	makeLabel(events, {
 		Name = "AdminEventsTitle",
@@ -928,9 +943,9 @@ function Menu.new(options)
 		TextSize = 10,
 	})
 	local eventPanel =
-		makePanel(events, "EventControls", UDim2.fromOffset(18, 70), UDim2.new(1, -36, 0, 246), TOKENS.main, 0.08)
+		makePanel(events, "EventControls", UDim2.fromOffset(18, 70), UDim2.new(1, -36, 0, 304), TOKENS.main, 0.08)
 	self._eventButtons = {}
-	self._eventDisplayOrder = { "summer", "battle", "disco", "rings", "masked", "overdrive", "egg" }
+	self._eventDisplayOrder = { "summer", "battle", "disco", "rings", "masked", "overdrive", "fab", "survival", "egg" }
 	self._eventNames = {
 		summer = "Summer Coins",
 		battle = "Coin Battle",
@@ -938,9 +953,11 @@ function Menu.new(options)
 		rings = "Win Rings",
 		masked = "Masked",
 		overdrive = "Overdrive",
+		fab = "Fab Minigame",
+		survival = "Survival Chase",
 		egg = "Egg Rain",
 	}
-	self._eventSeparators, self._eventColumnDivider = makePanelDividers(eventPanel, "Event")
+	self._eventSeparators, self._eventColumnDivider = makePanelDividers(eventPanel, "Event", 8)
 	for index, key in ipairs(self._eventDisplayOrder) do
 		local column = ((index - 1) % 2) + 1
 		local row = math.floor((index - 1) / 2) + 1
@@ -1391,8 +1408,8 @@ function Menu:_applyResponsiveLayout(width)
 	events.EventsStatus.Size = UDim2.new(1, -28, 0, 18)
 	events.EventControls.Position = UDim2.fromOffset(14, 66)
 	if narrow then
-		events.CanvasSize = UDim2.fromOffset(0, 484)
-		events.EventControls.Size = UDim2.new(1, -28, 0, 404)
+		events.CanvasSize = UDim2.fromOffset(0, 600)
+		events.EventControls.Size = UDim2.new(1, -28, 0, 516)
 		self._eventColumnDivider.Visible = false
 		for index, kind in ipairs(self._eventDisplayOrder) do
 			local switch = self._eventButtons[kind].switch
@@ -1400,20 +1417,20 @@ function Menu:_applyResponsiveLayout(width)
 			switch.button.Size = UDim2.new(1, -24, 0, 48)
 		end
 		for index, separator in ipairs(self._eventSeparators) do
-			separator.Visible = index <= 6
-			if index <= 6 then
+			separator.Visible = index <= 8
+			if index <= 8 then
 				separator.Position = UDim2.fromOffset(12, 65 + ((index - 1) * 56))
 				separator.Size = UDim2.new(1, -24, 0, 1)
 			end
 		end
 		self._stormButton.Position = UDim2.new(1, -94, 0, 23)
 		self._summerSettingsPopover.AnchorPoint = Vector2.new(1, 0)
-		self._summerSettingsPopover.Position = UDim2.new(1, -68, 0, 57)
-		self._summerSettingsPopover.Size = UDim2.fromOffset(260, 96)
-		self._summerSettingsAnchor.Position = UDim2.fromOffset(247, -8)
+		self._summerSettingsPopover.Position = UDim2.new(1, -12, 0, 57)
+		self._summerSettingsPopover.Size = UDim2.new(1, -24, 0, 96)
+		self._summerSettingsAnchor.Position = UDim2.new(1, -13, 0, -8)
 	else
-		events.CanvasSize = UDim2.fromOffset(0, 330)
-		events.EventControls.Size = UDim2.new(1, -28, 0, 246)
+		events.CanvasSize = UDim2.fromOffset(0, 388)
+		events.EventControls.Size = UDim2.new(1, -28, 0, 304)
 		self._eventColumnDivider.Visible = true
 		self._eventColumnDivider.Position = UDim2.new(0.5, 0, 0, 12)
 		self._eventColumnDivider.Size = UDim2.new(0, 1, 1, -24)
@@ -1425,8 +1442,8 @@ function Menu:_applyResponsiveLayout(width)
 			switch.button.Size = UDim2.new(0.5, -18, 0, 48)
 		end
 		for index, separator in ipairs(self._eventSeparators) do
-			separator.Visible = index <= 3
-			if index <= 3 then
+			separator.Visible = index <= 4
+			if index <= 4 then
 				separator.Position = UDim2.fromOffset(12, 65 + ((index - 1) * 58))
 				separator.Size = UDim2.new(1, -24, 0, 1)
 			end
@@ -1826,7 +1843,18 @@ function Menu:_dispatchEvents(previousConfig)
 	end
 	local nextConfig = cloneEventConfig(self._eventConfig)
 	local anyEnabled = false
-	for _, kind in ipairs({ "summer", "battle", "egg", "disco", "soccer", "rings", "masked", "overdrive" }) do
+	for _, kind in ipairs({
+		"summer",
+		"battle",
+		"egg",
+		"disco",
+		"soccer",
+		"rings",
+		"masked",
+		"overdrive",
+		"fab",
+		"survival",
+	}) do
 		anyEnabled = anyEnabled or nextConfig[kind] == true
 	end
 	self._busy = true
@@ -2389,6 +2417,20 @@ function Menu:_wire()
 			self._eventButtons.overdrive.button.Activated,
 			function()
 				self:_toggleEvent("overdrive")
+			end,
+		},
+		{
+			"event-fab",
+			self._eventButtons.fab.button.Activated,
+			function()
+				self:_toggleEvent("fab")
+			end,
+		},
+		{
+			"event-survival",
+			self._eventButtons.survival.button.Activated,
+			function()
+				self:_toggleEvent("survival")
 			end,
 		},
 		{

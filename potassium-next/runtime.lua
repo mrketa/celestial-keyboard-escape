@@ -213,6 +213,8 @@ local EVENT_KINDS = {
 	rings = true,
 	masked = true,
 	overdrive = true,
+	fab = true,
+	survival = true,
 }
 
 local function validCollectorConfig(config: any): boolean
@@ -240,7 +242,18 @@ end
 
 local function collectorEnabledSummary(config: any): string
 	local enabled = {}
-	for _, kind in ipairs({ "summer", "battle", "egg", "disco", "soccer", "rings", "masked", "overdrive" }) do
+	for _, kind in ipairs({
+		"summer",
+		"battle",
+		"egg",
+		"disco",
+		"soccer",
+		"rings",
+		"masked",
+		"overdrive",
+		"fab",
+		"survival",
+	}) do
 		if type(config) == "table" and config[kind] == true then
 			enabled[#enabled + 1] = kind
 		end
