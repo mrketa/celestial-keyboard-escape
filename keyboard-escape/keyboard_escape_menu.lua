@@ -17,6 +17,7 @@ local REQUIRED_METHODS = {
 	"SetKeyKinds",
 	"SetAutoFuse",
 	"SetAutoEquipItems",
+	"SetAutoGloveBattle",
 	"SetAutoEquipTrails",
 	"SetAutoEquipAuras",
 	"SetFuseItems",
@@ -129,6 +130,7 @@ function Menu.new(Library: any, controller: any, options: any?): (any?, any?)
 			local ok, result, detail = pcall(function()
 				return controller[method](controller, table.unpack(arguments, 1, arguments.n))
 			end)
+			if app._destroyed then return false end
 			if not ok then
 				ui:Notify({ Title = "Keyboard Escape", Text = tostring(result), Type = "danger", Duration = 5 })
 				return false
@@ -142,6 +144,7 @@ function Menu.new(Library: any, controller: any, options: any?): (any?, any?)
 
 		local sessionGenerations: { [string]: number } = {}
 		local function action(method: string, ...: any)
+			if app._destroyed then return end
 			local baselineKey: string? = nil
 			local baselineGeneration = 0
 			local baselineAmount: number? = nil
@@ -152,7 +155,8 @@ function Menu.new(Library: any, controller: any, options: any?): (any?, any?)
 					sessionGenerations[metric.key] = generation
 					if select(1, ...) == true then
 						local ok, snapshot = pcall(function() return controller:Snapshot() end)
-						if sessionGenerations[metric.key] == generation and ok and type(snapshot) == "table" and snapshot[metric.flag] ~= true then
+						if app._destroyed or sessionGenerations[metric.key] ~= generation then return end
+						if ok and type(snapshot) == "table" and snapshot[metric.flag] ~= true then
 							baselineKey = metric.key
 							baselineGeneration = generation
 							previousBaseline = app._sessionBaselines[metric.key]

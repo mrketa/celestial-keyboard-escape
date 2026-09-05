@@ -13,6 +13,10 @@ Runtime.__index = Runtime
 local STRATEGY_STAGE_1 = "Stage 1 (Instant TP)"
 local STRATEGY_MAX = "Max Stage"
 local WORKER_DELAY = 0.35
+local STAGE_1_SAFETY_MARGIN = 0.010
+local STAGE_1_WAIT_STEP = 0.1
+local STAGE_1_REWARD_POLL = 0.01
+local STAGE_1_REWARD_TIMEOUT = 5
 local MAX_ROUTE_SPEED = 300
 local ROUTE_SPEED = 200
 local MOVE_ARRIVAL_RADIUS = 0.05
@@ -23,30 +27,27 @@ local ANTI_FLING_ANGULAR_SPEED = 60
 local ANTI_FLING_RECOVERY_DISTANCE = 12
 local MAX_DIRECT_STAGE = 14
 local DIRECT_ROUTES = {
-	[3] = { checkpoint = 1, cost = 600000000, minNet = 200000000, plate = "WinBlock34", staging = Vector3.new(-1462.791, 214.103, 333.030), minimum = 8 },
-	[4] = { checkpoint = 2, cost = 1000000000, minNet = 250000000, plate = "WinBlock35", staging = Vector3.new(-1413.355, 532.115, 760.514), minimum = 12 },
-	[5] = { checkpoint = 3, cost = 1600000000, minNet = 400000000, plate = "WinBlock36", staging = Vector3.new(-1413.474, 532.114, 1330.716), minimum = 15 },
-	[6] = { checkpoint = 4, cost = 2500000000, minNet = 1000000000, plate = "WinBlock37", staging = Vector3.new(-2063.262, 442.113, 1477.350), minimum = 18 },
-	[7] = { checkpoint = 5, cost = 4000000000, minNet = 1500000000, plate = "WinBlock38", staging = Vector3.new(-3223.170, 671.624, 1476.435), minimum = 22 },
+	[3] = { checkpoint = 1, minNet = 200000000, plate = "WinBlock34", staging = Vector3.new(-1462.791, 214.103, 333.030) },
+	[4] = { checkpoint = 2, minNet = 250000000, plate = "WinBlock35", staging = Vector3.new(-1413.355, 532.115, 760.514) },
+	[5] = { checkpoint = 3, minNet = 400000000, plate = "WinBlock36", staging = Vector3.new(-1413.474, 532.114, 1330.716) },
+	[6] = { checkpoint = 4, minNet = 1000000000, plate = "WinBlock37", staging = Vector3.new(-2063.262, 442.113, 1477.350) },
+	[7] = { checkpoint = 5, minNet = 1500000000, plate = "WinBlock38", staging = Vector3.new(-3223.170, 671.624, 1476.435) },
 	[8] = {
 		checkpoint = 6,
-		cost = 7000000000,
 		minNet = 10000000000,
 		plate = "WinBlock39",
 		staging = Vector3.new(-3645, 615.9617919921875, 1475),
-		minimum = 5.25,
-		shortcut = true,
 	},
-	[9] = { checkpoint = 7, cost = 11000000000, minNet = 5000000000, plate = "WinBlock40", staging = Vector3.new(-4131.452, 615.960, 1476.639), minimum = 30 },
-	[10] = { checkpoint = 8, cost = 17000000000, minNet = 8000000000, plate = "WinBlock41", staging = Vector3.new(-4968.451, 615.967, 1476.638), minimum = 35 },
-	[11] = { checkpoint = 9, cost = 32000000000, minNet = 8000000000, plate = "WinBlock42", staging = Vector3.new(-5741.451, 850.980, 1476.571), minimum = 40 },
-	[12] = { checkpoint = 10, cost = 50000000000, minNet = 15000000000, plate = "WinBlock43", staging = Vector3.new(-6662.904, 850.993, 1476.504), minimum = 45 },
-	[13] = { checkpoint = 11, cost = 80000000000, minNet = 20000000000, plate = "WinBlock44", staging = Vector3.new(-9514.962, 850.993, 1476.504), minimum = 52 },
-	[14] = { checkpoint = 12, cost = 130000000000, minNet = 70000000000, plate = "WinBlock45", staging = Vector3.new(-10807.108, 850.990, 1476.499), minimum = 65 },
+	[9] = { checkpoint = 7, minNet = 5000000000, plate = "WinBlock40", staging = Vector3.new(-4131.452, 615.960, 1476.639) },
+	[10] = { checkpoint = 8, minNet = 8000000000, plate = "WinBlock41", staging = Vector3.new(-4968.451, 615.967, 1476.638) },
+	[11] = { checkpoint = 9, minNet = 8000000000, plate = "WinBlock42", staging = Vector3.new(-5741.451, 850.980, 1476.571) },
+	[12] = { checkpoint = 10, minNet = 15000000000, plate = "WinBlock43", staging = Vector3.new(-6662.904, 850.993, 1476.504) },
+	[13] = { checkpoint = 11, minNet = 20000000000, plate = "WinBlock44", staging = Vector3.new(-9514.962, 850.993, 1476.504) },
+	[14] = { checkpoint = 12, minNet = 70000000000, plate = "WinBlock45", staging = Vector3.new(-10807.108, 850.990, 1476.499) },
 }
 local DIRECT_APPROACH_SPEED = 300
-local DIRECT_REWARD_INTERVAL = 26
-local DIRECT_REWARD_SAFETY = 1
+local DIRECT_SAFETY_MARGIN = 0.050
+local DIRECT_WAIT_STEP = 0.1
 local CHECKPOINT_ACK_TIMEOUT = 5
 local CHECKPOINT_COST_TIMEOUT = 3
 local DIRECT_REWARD_TIMEOUT = 7
@@ -139,6 +140,12 @@ local function child(parent: Instance, name: string): Instance?
 	return parent:FindFirstChild(name)
 end
 
+local function stageTeleportLocked(storage: Instance): boolean
+	local configs = child(storage, "CurrentGameplayConfigs")
+	local restrictions = configs and child(configs, "GameplayRestrictions")
+	return restrictions ~= nil and restrictions:GetAttribute("StageTeleportLocked") == true
+end
+
 local function number(value: any): number
 	return if type(value) == "number" then value else 0
 end
@@ -219,7 +226,10 @@ function Runtime.new(options: { [string]: any }?): any
 	self._lastStable = nil
 	self._previousPosition = nil
 	self._nextDirectWinAt = 0
-	self._nextRewardAt = 0
+	self._lastDirectRewardAt = nil
+	self._directPing = 0
+	self._stage1Timing = nil
+	self._stage1Ping = 0
 	self._routeInvalidated = false
 	self._flags = {
 		autoWins = false, autoAdminEvents = false, godMode = false, removeObstacles = false, autoRebirth = false,
@@ -362,9 +372,31 @@ function Runtime:_config(): any
 	return require(self._storage.Config.Worlds.World3)
 end
 
+function Runtime:_winsMultiplier(): number
+	if type(self._options.getWinsMultiplier) == "function" then return self._options.getWinsMultiplier() end
+	return require(self._storage.BonusManager):GetWinsMultiplier(self._players.LocalPlayer)
+end
+
 function Runtime:_rebirthTiers(): any
 	if self._options.rebirthTiers ~= nil then return self._options.rebirthTiers end
 	return require(self._storage:WaitForChild("Config")).REBIRTH_TIERS
+end
+
+function Runtime:_winDebounceDelay(): any
+	local rootConfig = self:_winValidationConfig()
+	return if type(rootConfig) == "table" then rootConfig.WIN_DEBOUNCE_DELAY else nil
+end
+
+function Runtime:_winValidationConfig(): any
+	if type(self._options.getWinValidationConfig) == "function" then return self._options.getWinValidationConfig() end
+	local module = child(self._storage, "Config")
+	return module and require(module)
+end
+
+function Runtime:_networkPing(): any
+	if type(self._options.getNetworkPing) == "function" then return self._options.getNetworkPing() end
+	local player = self._players.LocalPlayer
+	return player and player:GetNetworkPing()
 end
 
 function Runtime:_root(): BasePart?
@@ -485,7 +517,7 @@ function Runtime:Snapshot(): { [string]: any }
 end
 
 function Runtime:SetWinStrategies(strategies: any): boolean
-	if not self._active or type(strategies) ~= "table" then return false end
+	if not self._active or type(strategies) ~= "table" or #strategies > 1 then return false end
 	local accepted, seen = {}, {}
 	for _, strategy in ipairs(strategies) do
 		if (strategy ~= STRATEGY_STAGE_1 and strategy ~= STRATEGY_MAX) or seen[strategy] then return false end
@@ -604,16 +636,20 @@ function Runtime:SetAutoAdminEvents(enabled: any): (boolean, string?)
 	end)
 end
 
-function Runtime:RunStage1(): boolean
-	if not self._active then return false end
+function Runtime:RunStage1(timing: any?): boolean
+	if not self._active or (timing ~= nil and not self:_stage1Current(timing)) then return false end
 	if not self:_releaseOutgoingMovement("wins") then return false end
+	if not self._active or (timing ~= nil and not self:_stage1Current(timing)) then return false end
 	local structure = child(self._world, "Structure")
 	local stage = structure and child(structure, "Stage1")
 	local sas = stage and child(stage, "SAS")
 	local plate = sas and child(sas, "WinBlock32")
 	if plate == nil or not plate:IsA("BasePart") then self._status.wins = "Stage 1 plate unavailable" return false end
 	local root = self:_root()
-	if root == nil then self._status.wins = "Character unavailable" return false end
+	if not self._active or (timing ~= nil and not self:_stage1Current(timing)) then return false end
+	if root == nil or root.Anchored then self._status.wins = "Character unavailable" return false end
+	local humanoid = root.Parent and root.Parent:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil or humanoid.Health <= 0 then self._status.wins = "Character unavailable" return false end
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
 	root.CFrame = plate.CFrame * CFrame.new(0, 1.5, 0)
@@ -631,8 +667,9 @@ function Runtime:_releaseMovementState(state: any): boolean
 	return true
 end
 
-function Runtime:_moveTo(position: Vector3, generation: number, speed: number?, expectedRoot: BasePart?): boolean
+function Runtime:_moveTo(position: Vector3, generation: number, speed: number?, expectedRoot: BasePart?, timing: any?): boolean
 	local root = self:_root()
+	if not self._active or self._workers.wins ~= generation or (timing ~= nil and not self:_directCurrent(timing)) then return false end
 	if root == nil or root.Anchored or self._movementRestore ~= nil or (expectedRoot ~= nil and root ~= expectedRoot) then return false end
 	local character = root.Parent
 	if character == nil then return false end
@@ -660,7 +697,8 @@ function Runtime:_moveTo(position: Vector3, generation: number, speed: number?, 
 			{ CFrame = target }
 		)
 	end)
-	if not created or tween == nil then
+	if not created or tween == nil or not self._active or self._workers.wins ~= generation
+		or (timing ~= nil and not self:_directCurrent(timing)) then
 		self:_releaseMovementState(movementState)
 		return false
 	end
@@ -674,7 +712,10 @@ function Runtime:_moveTo(position: Vector3, generation: number, speed: number?, 
 
 	local started = self._clock()
 	local arrived = false
-	while self._active and self._workers.wins == generation and self:_root() == root and self._clock() - started <= duration + TWEEN_SETTLE_TIMEOUT do
+	while self._clock() - started <= duration + TWEEN_SETTLE_TIMEOUT do
+		local currentRoot = self:_root()
+		if currentRoot ~= root or not self._active or self._workers.wins ~= generation
+			or (timing ~= nil and not self:_directCurrent(timing)) then break end
 		local remaining = (position - root.Position).Magnitude
 		if remaining <= MOVE_ARRIVAL_RADIUS or (self._clock() - started >= duration and remaining <= 2) then
 			arrived = true
@@ -691,7 +732,8 @@ function Runtime:_moveTo(position: Vector3, generation: number, speed: number?, 
 	pcall(function() tween:Cancel() end)
 	local ownedMovement = self:_releaseMovementState(movementState)
 	if ownedMovement then humanoid:Move(Vector3.zero, false) end
-	if self:_root() ~= root or not self._active or self._workers.wins ~= generation or not arrived then return false end
+	if self:_root() ~= root or not self._active or self._workers.wins ~= generation or not arrived
+		or (timing ~= nil and not self:_directCurrent(timing)) then return false end
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
 	root.CFrame = target
@@ -813,12 +855,20 @@ function Runtime:_settleCheckpointPending(): boolean
 	if pending == nil then return true end
 	if not self._active then return false end
 	if not pending.accounted then
-		if not pending.acknowledged or number(self:_state().Wins) ~= pending.expectedWins then return false end
+		if not pending.acknowledged then return false end
+		local wins = number(self:_state().Wins)
+		if not self._active or self._checkpointPending ~= pending or wins ~= pending.expectedWins then return false end
 		pending.accounted = true
 	end
 	if not pending.poseReady then return false end
 	local root = self:_root()
+	if not self._active or self._checkpointPending ~= pending then return false end
 	if root then self:_refreshStablePose(root) end
+	pending.settledAt = pending.settledAt or self._clock()
+	pending.readyAt = pending.settledAt + pending.validationDelay + pending.buffer
+	if self._lastDirectRewardAt ~= nil then
+		pending.readyAt = math.max(pending.readyAt, self._lastDirectRewardAt + pending.debounce + pending.buffer)
+	end
 	pending.settled = true
 	if pending.connection then pending.connection:Disconnect() end
 	if pending.poseConnection then pending.poseConnection:Disconnect() end
@@ -835,34 +885,122 @@ function Runtime:_writeDirectPosition(root: BasePart, position: Vector3, label: 
 	if type(observer) == "function" then observer(label, position, self._clock()) end
 end
 
+function Runtime:_directCurrent(timing: any): boolean
+	if not self._active or not self._flags.autoWins or self._workers.wins ~= timing.generation
+		or self._strategies ~= timing.strategies or timing.strategies[1] ~= STRATEGY_MAX then return false end
+	local root = self:_root()
+	-- A root getter can yield as well; recheck the session after it returns.
+	return root ~= nil and root == timing.root and self._active and self._flags.autoWins
+		and self._workers.wins == timing.generation and self._strategies == timing.strategies
+		and timing.strategies[1] == STRATEGY_MAX
+end
+
+function Runtime:_directBuffer(timing: any): number?
+	local readPing, ping = pcall(self._networkPing, self)
+	if not self:_directCurrent(timing) then return nil end
+	if readPing and type(ping) == "number" and ping >= 0 and ping < math.huge then
+		self._directPing = ping
+	end
+	return math.max(DIRECT_SAFETY_MARGIN, self._directPing / 2)
+end
+
+function Runtime:_directReadyAt(timing: any, pending: any): number?
+	local buffer = self:_directBuffer(timing)
+	if buffer == nil then return nil end
+	pending.buffer = math.max(pending.buffer, buffer)
+	pending.readyAt = math.max(pending.readyAt, pending.settledAt + pending.validationDelay + pending.buffer)
+	if self._lastDirectRewardAt ~= nil then
+		pending.readyAt = math.max(pending.readyAt, self._lastDirectRewardAt + pending.debounce + pending.buffer)
+	end
+	self._nextDirectWinAt = math.max(self._nextDirectWinAt, pending.readyAt)
+	return pending.readyAt
+end
+
+function Runtime:_waitDirectReady(timing: any, pending: any, stage: number): boolean
+	while self:_directCurrent(timing) do
+		-- Every deadline check includes a fresh RTT sample, including the final
+		-- one before movement. A larger margin can extend but never shorten it.
+		local readyAt = self:_directReadyAt(timing, pending)
+		if readyAt == nil then return false end
+		local remaining = readyAt - self._clock()
+		if remaining <= 0 then return self:_directCurrent(timing) end
+		self._status.wins = string.format("Stage %d gate %.2fs", stage, math.ceil(remaining * 100) / 100)
+		self._wait(math.min(DIRECT_WAIT_STEP, remaining))
+	end
+	return false
+end
+
 function Runtime:_runValidatedDirect(generation: number): boolean
-	if not self:_releaseOutgoingMovement("wins") or self._buyItemsPending ~= nil then return false end
+	local timing = { generation = generation, strategies = self._strategies, root = self:_root() }
+	if not self:_directCurrent(timing) then return false end
+	if stageTeleportLocked(self._storage) then
+		self._status.wins = "Waiting for event: stage teleports disabled"
+		return false
+	end
+	if not self:_releaseOutgoingMovement("wins") or not self:_directCurrent(timing) or self._buyItemsPending ~= nil then return false end
+	while self:_directCurrent(timing) do
+		local cooldown = self._nextDirectWinAt - self._clock()
+		if cooldown <= 0 then break end
+		self._status.wins = string.format("Max Stage retry delay %.0fs", math.ceil(cooldown))
+		self._wait(math.min(DIRECT_WAIT_STEP, cooldown))
+	end
+	if not self:_directCurrent(timing) then return false end
 	local directStage = self:ResolveMaxStage()
+	if not self:_directCurrent(timing) then return false end
 	local route = DIRECT_ROUTES[directStage]
 	if route == nil then self._status.wins = "No validated direct route" return false end
+	local loaded, validation = pcall(self._winValidationConfig, self)
+	if not self:_directCurrent(timing) then return false end
+	local minima = if loaded and type(validation) == "table" then validation.WIN_MIN_TIMES else nil
+	local targetMinimum = if type(minima) == "table" then minima[route.plate] else nil
+	local previousPlate = "WinBlock" .. (tonumber(string.match(route.plate, "%d+$")) - 1)
+	local previousMinimum = if type(minima) == "table" then minima[previousPlate] else nil
+	local debounce = if loaded and type(validation) == "table" then validation.WIN_DEBOUNCE_DELAY else nil
+	if type(targetMinimum) ~= "number" or not (targetMinimum >= 0 and targetMinimum < math.huge)
+		or type(previousMinimum) ~= "number" or not (previousMinimum >= 0 and previousMinimum < math.huge)
+		or targetMinimum <= previousMinimum
+		or type(debounce) ~= "number" or not (debounce > 0 and debounce < math.huge) then
+		self._status.wins = string.format("Waiting for Stage %d validation configuration", directStage)
+		return false
+	end
+	local buffer = self:_directBuffer(timing)
+	if buffer == nil then return false end
 	self._routeInvalidated = false
 	local checkpointStage = route.checkpoint
-	local cooldown = self._nextDirectWinAt - self._clock()
-	if cooldown > 0 then
-		self._status.wins = string.format("Stage %d retry delay %.0fs", directStage, math.ceil(cooldown))
-		if not self:_waitCurrent("wins", generation, cooldown) then return false end
-	end
 	local player = self._players.LocalPlayer
 	local streamed = pcall(function() player:RequestStreamAroundAsync(route.staging, 8) end)
+	if not self:_directCurrent(timing) then return false end
 	if not streamed then self._status.wins = string.format("Stage %d streaming failed", directStage) return false end
-	if not self._active or self._workers.wins ~= generation then return false end
+	if stageTeleportLocked(self._storage) then
+		self._status.wins = "Waiting for event: stage teleports disabled"
+		return false
+	end
 	local structure = child(self._world, "Structure")
 	local stage = structure and child(structure, "Stage" .. directStage)
 	local sas = stage and child(stage, "SAS")
 	local plate = sas and child(sas, route.plate)
 	if plate == nil or not plate:IsA("BasePart") then self._status.wins = string.format("Stage %d plate unavailable", directStage) return false end
 
+	local worldConfig = self:_config()
+	if not self:_directCurrent(timing) then return false end
+	local multiplier = self:_winsMultiplier()
+	if not self:_directCurrent(timing) then return false end
+	local checkpointCost = math.floor(worldConfig.CHECKPOINTS[checkpointStage].WinPrice * multiplier)
 	local beforeCheckpoint = number(self:_state().Wins)
+	if not self:_directCurrent(timing) then return false end
+	if stageTeleportLocked(self._storage) then
+		self._status.wins = "Waiting for event: stage teleports disabled"
+		return false
+	end
+	if beforeCheckpoint < checkpointCost then
+		self._status.wins = "Waiting for checkpoint Wins"
+		return false
+	end
 	local pending = {
 		acknowledged = false, accounted = false, settled = false, poseFrameSeen = false, poseReady = false,
-		connection = nil :: any, poseConnection = nil :: any,
-		expectedWins = beforeCheckpoint - route.cost,
-		readyAt = self._clock() + route.minimum + DIRECT_REWARD_SAFETY,
+		connection = nil :: any, poseConnection = nil :: any, settledAt = nil :: number?,
+		expectedWins = beforeCheckpoint - checkpointCost,
+		validationDelay = targetMinimum - previousMinimum, debounce = debounce, buffer = buffer, readyAt = 0,
 	}
 	local successRemote = self._options.checkpointSuccessRemote or self._storage.Remotes.CheckpointTpSuccess
 	local requestRemote = self._options.checkpointRequestRemote or self._storage.Remotes.RequestCheckpointTp
@@ -871,11 +1009,12 @@ function Runtime:_runValidatedDirect(generation: number): boolean
 		pending.acknowledged = true
 		self:_settleCheckpointPending()
 	end)
-	-- Acknowledgement/cost can precede CFrame replication. Retain the request across
-	-- the next complete Heartbeat interval; active Wins owns the remaining stage gate.
+	-- Acknowledgement/cost can precede CFrame replication. Retain the request
+	-- across two post-accounting Heartbeats before starting the remaining gate.
 	pending.poseConnection = self._runService.Heartbeat:Connect(function()
 		if self._checkpointPending ~= pending or not self._active or not pending.acknowledged then return end
 		self:_settleCheckpointPending()
+		if self._checkpointPending ~= pending or not self._active then return end
 		if pending.accounted then
 			if pending.poseFrameSeen then
 				pending.poseReady = true
@@ -887,34 +1026,40 @@ function Runtime:_runValidatedDirect(generation: number): boolean
 	end)
 	self._checkpointPending = pending
 	self._movementOwner = "wins"
-	local validationStartedAt = self._clock()
 	local sent, requestError = pcall(function() requestRemote:FireServer(checkpointStage, "wins") end)
 	if not sent then
 		if pending.connection then pending.connection:Disconnect() end
 		if pending.poseConnection then pending.poseConnection:Disconnect() end
 		if self._checkpointPending == pending then self._checkpointPending = nil end
-		if self._active and self._workers.wins == generation then
+		if self:_directCurrent(timing) then
 			self:_stopAutoWins()
 			self._status.wins = "Checkpoint request failed: " .. tostring(requestError)
 		end
 		return false
 	end
-	local elapsed = 0
-	while self._active and self._checkpointPending == pending and not pending.acknowledged and elapsed < CHECKPOINT_ACK_TIMEOUT do
-		local started = self._clock()
-		local actual = self._wait(0.02)
-		elapsed += math.max(0.02, self._clock() - started, number(actual))
+	local ackDeadline = self._clock() + CHECKPOINT_ACK_TIMEOUT
+	while self:_directCurrent(timing) and self._checkpointPending == pending and not pending.acknowledged do
+		local remaining = ackDeadline - self._clock()
+		if remaining <= 0 then break end
+		self._wait(math.min(0.02, remaining))
 	end
-	elapsed = 0
-	while self._active and self._checkpointPending == pending and pending.acknowledged and elapsed < CHECKPOINT_COST_TIMEOUT do
+	local costDeadline = self._clock() + CHECKPOINT_COST_TIMEOUT
+	while self:_directCurrent(timing) and self._checkpointPending == pending and pending.acknowledged do
 		if self:_settleCheckpointPending() then break end
-		if not pending.accounted and number(self:_state().Wins) < pending.expectedWins then break end
-		local started = self._clock()
-		local actual = self._wait(0.02)
-		elapsed += math.max(0.02, self._clock() - started, number(actual))
+		if not self:_directCurrent(timing) then break end
+		if not pending.accounted then
+			local currentWins = number(self:_state().Wins)
+			if not self:_directCurrent(timing) or currentWins < pending.expectedWins then break end
+		end
+		local remaining = costDeadline - self._clock()
+		if remaining <= 0 then break end
+		self._wait(math.min(0.02, remaining))
 	end
-	if self._active and self._checkpointPending == pending then self:_settleCheckpointPending() end
-	if not self._active or self._workers.wins ~= generation then return false end
+	if self:_directCurrent(timing) and self._checkpointPending == pending then self:_settleCheckpointPending() end
+	if not self:_directCurrent(timing) then
+		if self._workers.wins == generation and self._movementOwner == "wins" then self._movementOwner = nil end
+		return false
+	end
 	if not pending.settled then
 		self:_stopAutoWins()
 		self._status.wins = if pending.accounted
@@ -924,94 +1069,181 @@ function Runtime:_runValidatedDirect(generation: number): boolean
 			else string.format("Checkpoint %d for Stage %d unconfirmed", checkpointStage, directStage)
 		return false
 	end
-	self._nextDirectWinAt = validationStartedAt + route.minimum + DIRECT_REWARD_SAFETY
 
-	local root = self:_root()
-	if root == nil then self:_stopAutoWins() self._status.wins = "Character unavailable after checkpoint" return false end
-	local shortcut = route.shortcut
-
-
-	local readyAt = if shortcut then validationStartedAt + route.minimum else math.max(validationStartedAt + route.minimum, self._nextRewardAt)
-	local remaining = readyAt - self._clock()
-	if remaining > 0 then
-		if shortcut then
-			self._status.wins = string.format("Stage %d shortcut gate %.2fs", directStage, remaining)
-		else
-			self._status.wins = string.format("Stage %d gate %.0fs", directStage, math.ceil(remaining))
-		end
-		if not self:_waitCurrent("wins", generation, remaining) or self:_root() ~= root then
-			if self._workers.wins == generation and self._movementOwner == "wins" then self._movementOwner = nil end
-			return false
-		end
+	if not self:_waitDirectReady(timing, pending, directStage) then
+		if self._workers.wins == generation and self._movementOwner == "wins" then self._movementOwner = nil end
+		return false
+	end
+	local root = timing.root
+	if root.Anchored or stageTeleportLocked(self._storage) then
+		if self._movementOwner == "wins" then self._movementOwner = nil end
+		self._status.wins = "Stage movement unavailable"
+		return false
 	end
 	self._movementOwner = "wins"
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
 	self:_writeDirectPosition(root, route.staging, "staging")
-	if not shortcut then
-		for _ = 1, 3 do
-			self._runService.Heartbeat:Wait()
-			if not self._active or self._workers.wins ~= generation or self:_root() ~= root then
-				if self._workers.wins == generation and self._movementOwner == "wins" then self._movementOwner = nil end
-				return false
-			end
-		end
-	end
-	local moved = self:_moveTo(plate.Position + Vector3.new(0, 1.5, 0), generation, DIRECT_APPROACH_SPEED, root)
+	local moved = self:_directCurrent(timing)
+		and self:_moveTo(plate.Position + Vector3.new(0, 1.5, 0), generation, DIRECT_APPROACH_SPEED, root, timing)
 	if self._workers.wins == generation and self._movementOwner == "wins" then self._movementOwner = nil end
-	if not self._active or self._workers.wins ~= generation then return false end
+	if not self:_directCurrent(timing) then return false end
 	if not moved then self._status.wins = string.format("Stage %d plate approach failed", directStage) return false end
 
 	local rewardDeadline = self._clock() + DIRECT_REWARD_TIMEOUT
-	while self._clock() < rewardDeadline do
-		if number(self:_state().Wins) >= beforeCheckpoint + route.minNet then
-			local rewardAt = self._clock()
+	while self:_directCurrent(timing) do
+		local currentWins = number(self:_state().Wins)
+		if not self:_directCurrent(timing) then return false end
+		local rewardAt = self._clock()
+		if rewardAt > rewardDeadline then break end
+		if currentWins >= beforeCheckpoint + route.minNet then
 			self._nextDirectWinAt = 0
-			self._nextRewardAt = rewardAt + DIRECT_REWARD_INTERVAL + DIRECT_REWARD_SAFETY
-			self._status.wins = if shortcut
-				then string.format("Stage %d shortcut confirmed via checkpoint %d", directStage, checkpointStage)
-				else string.format("Stage %d win confirmed via checkpoint %d", directStage, checkpointStage)
+			self._lastDirectRewardAt = rewardAt
+			self._status.wins = string.format("Stage %d win confirmed via checkpoint %d", directStage, checkpointStage)
 			return true
 		end
-		if not self:_waitCurrent("wins", generation, 0.02) then return false end
+		local remaining = rewardDeadline - rewardAt
+		if remaining <= 0 then break end
+		self._wait(math.min(0.02, remaining))
 	end
+	if not self:_directCurrent(timing) then return false end
 	self._status.wins = string.format("Stage %d reward unconfirmed; safe retry scheduled", directStage)
 	return false
 end
 
-function Runtime:_waitForWins(before: number, generation: number): boolean
-	local elapsed = 0
-	while elapsed < 5 do
-		if number(self:_state().Wins) ~= before then return true end
-		if not self:_waitCurrent("wins", generation, 0.1) then return false end
-		elapsed += 0.1
+function Runtime:_stage1Current(timing: any): boolean
+	return self._active and self._flags.autoWins and self._workers.wins == timing.generation
+		and self._stage1Timing == timing and self._strategies == timing.strategies
+		and timing.strategies[1] == STRATEGY_STAGE_1
+end
+
+function Runtime:_stage1ReadyAt(timing: any): number?
+	local readDelay, delay = pcall(self._winDebounceDelay, self)
+	if not self:_stage1Current(timing) then return nil end
+	if not readDelay or type(delay) ~= "number" or delay ~= delay or delay <= 0 or delay == math.huge then
+		timing.anchorAt = self._clock()
+		self._status.wins = "Waiting for Stage 1 cooldown configuration"
+		return nil
+	end
+	local readPing, ping = pcall(self._networkPing, self)
+	if not self:_stage1Current(timing) then return nil end
+	if readPing and type(ping) == "number" and ping == ping and ping >= 0 and ping < math.huge then
+		self._stage1Ping = ping
+	end
+	-- GetNetworkPing is RTT in seconds. Unknown ping keeps the last sample;
+	-- no latency estimate is subtracted from the observed cooldown anchor.
+	local margin = math.max(STAGE_1_SAFETY_MARGIN, self._stage1Ping / 2)
+	timing.readyAt = math.max(timing.readyAt, timing.anchorAt + delay + margin)
+	return timing.readyAt
+end
+
+function Runtime:_waitStage1Ready(timing: any): (boolean, number?)
+	local readyAt, nextTimingRead, nextStatusAt = nil, 0, 0
+	while self:_stage1Current(timing) do
+		local currentWins = number(self:_state().Wins)
+		if not self:_stage1Current(timing) then return false end
+		local now = self._clock()
+		if currentWins > timing.wins then
+			-- Keep observing after a timeout: a late positive reward resets
+			-- the cooldown before a queued retry can touch the plate.
+			timing.anchorAt = now
+			timing.readyAt = 0
+			timing.wins = currentWins
+			nextTimingRead = 0
+		end
+		if now >= nextTimingRead or (readyAt ~= nil and now >= readyAt) then
+			-- Getters may yield, so ownership is checked after every read.
+			-- The final sample can extend, but never shorten, this deadline.
+			readyAt = self:_stage1ReadyAt(timing)
+			if not self:_stage1Current(timing) then return false end
+			now = self._clock()
+			nextTimingRead = now + STAGE_1_WAIT_STEP
+		end
+		local remaining = if readyAt ~= nil then readyAt - now else STAGE_1_WAIT_STEP
+		if readyAt ~= nil and remaining <= 0 then
+			local latestWins = number(self:_state().Wins)
+			if not self:_stage1Current(timing) then return false end
+			if latestWins > timing.wins then
+				timing.anchorAt = self._clock()
+				timing.readyAt = 0
+				timing.wins = latestWins
+				nextTimingRead = 0
+				continue
+			end
+			return true, latestWins
+		end
+		if readyAt ~= nil and now >= nextStatusAt then
+			self._status.wins = string.format("Stage 1 cooldown %.2fs", math.ceil(remaining * 100) / 100)
+			nextStatusAt = now + STAGE_1_WAIT_STEP
+		end
+		self._wait(math.min(STAGE_1_REWARD_POLL, remaining))
+	end
+	return false
+end
+
+function Runtime:_waitForWins(before: number, generation: number, timing: any): boolean
+	local deadline = self._clock() + STAGE_1_REWARD_TIMEOUT
+	while self:_stage1Current(timing) and self._workers.wins == generation do
+		local currentWins = number(self:_state().Wins)
+		if not self:_stage1Current(timing) then return false end
+		local observedAt = self._clock()
+		if observedAt > deadline then return false end
+		if currentWins > before then
+			timing.anchorAt = observedAt
+			timing.readyAt = 0
+			timing.wins = currentWins
+			return true
+		end
+		local remaining = deadline - observedAt
+		if remaining <= 0 then return false end
+		self._wait(math.min(STAGE_1_REWARD_POLL, remaining))
 	end
 	return false
 end
 
 function Runtime:_runWins(generation: number)
 	while self._active and self._flags.autoWins and generation == self._workers.wins do
+		local stage1Iteration = false
+		local directConfirmed = false
 		if #self._strategies == 0 then
 			self._status.wins = "Select a win strategy"
 		else
 			for _, strategy in ipairs(self._strategies) do
 				if not self:_waitCurrent("wins", generation, 0) then return end
 				if strategy == STRATEGY_STAGE_1 then
-					local before = number(self:_state().Wins)
-					self._movementOwner = "wins"
-					local ran = self:RunStage1()
-					if self._workers.wins == generation and self._movementOwner == "wins" then self._movementOwner = nil end
-					if ran then
-						local confirmed = self:_waitForWins(before, generation)
-						if not self._active or self._workers.wins ~= generation then return end
-						self._status.wins = if confirmed then "Win confirmed" else "Win not confirmed"
+					stage1Iteration = true
+					local strategies = self._strategies
+					local timing = self._stage1Timing
+					if timing == nil or timing.generation ~= generation or timing.strategies ~= strategies then
+						timing = { generation = generation, strategies = strategies, anchorAt = self._clock(), readyAt = 0, wins = 0 }
+						self._stage1Timing = timing
+						local currentWins = number(self:_state().Wins)
+						if not self:_stage1Current(timing) then continue end
+						timing.anchorAt = self._clock()
+						timing.wins = currentWins
+					end
+					local ready, before = self:_waitStage1Ready(timing)
+					if ready and before ~= nil and self:_stage1Current(timing) then
+						self._movementOwner = "wins"
+						local ran = self:RunStage1(timing)
+						if self._workers.wins == generation and self._movementOwner == "wins" then self._movementOwner = nil end
+						if not self:_stage1Current(timing) then continue end
+						local confirmed = ran and self:_waitForWins(before, generation, timing)
+						if not self:_stage1Current(timing) then continue end
+						if not confirmed then
+							-- Unknown acceptance starts a fresh full cooldown instead
+							-- of reusing an expired attempt deadline for a rapid retry.
+							timing.anchorAt = self._clock()
+							timing.readyAt = 0
+						end
+						if ran then self._status.wins = if confirmed then "Win confirmed" else "Win not confirmed" end
 					end
 				else
-					self:_runValidatedDirect(generation)
+					directConfirmed = self:_runValidatedDirect(generation)
 				end
 			end
 		end
-		if not self:_waitCurrent("wins", generation, WORKER_DELAY) then return end
+		if not stage1Iteration and not directConfirmed and not self:_waitCurrent("wins", generation, WORKER_DELAY) then return end
 	end
 	if self._workers.wins == generation and self._movementOwner == "wins" then self._movementOwner = nil end
 end
@@ -1158,6 +1390,7 @@ function Runtime:_rebirth(generation: number): boolean
 	local elapsed = 0
 	while elapsed < 5 do
 		local current = self:_state()
+		if not self._active or self._workers.rebirth ~= generation then return false end
 		if number(current.Rebirths) > beforeRebirths then self._status.rebirth = "Rebirth confirmed" return true end
 		if not self:_waitCurrent("rebirth", generation, 0.1) then return false end
 		elapsed += 0.1
@@ -1183,9 +1416,12 @@ function Runtime:SetAutoRebirth(enabled: any): boolean
 	return true
 end
 
-function Runtime:_catalog(kind: string): any
-	if type(self._options.getCatalog) == "function" then return self._options.getCatalog(kind) or {} end
+function Runtime:_catalog(kind: string, inventory: any?): any
+	if type(self._options.getCatalog) == "function" then return self._options.getCatalog(kind, inventory) or {} end
 	local module = require(self._storage.FeatureConfigs.PlayerUpgradesCatalog)
+	if inventory ~= nil then
+		return if kind == "trails" then module.GetInventoryTrails(inventory) else module.GetInventoryAuras(inventory)
+	end
 	return if kind == "trails" then module.GetTrails() else module.GetAuras()
 end
 
@@ -1246,6 +1482,10 @@ function Runtime:_buyCatalog(kind: string, generation: number)
 	end
 	local request = self:_catalogRequest(kind)
 	if not self._active or self._workers[kind] ~= generation then return end
+	if self._flags.autoWins or not self:_settleCheckpointPending() then
+		self._status[status] = "Paused while Auto Wins is active"
+		return
+	end
 	local ok = pcall(function() request:request(entry.key, "Wins"):await() end)
 	if not self._active or self._workers[kind] ~= generation then return end
 	if not ok then
@@ -1297,7 +1537,7 @@ function Runtime:_strongestOwnedCatalog(kind: string, state: any): string?
 	local field = if kind == "trails" then "OwnedTrails" else "OwnedAuras"
 	local bestKey: string? = nil
 	local bestMultiplier, bestPrice = 0, 0
-	for key, row in pairs(self:_catalog(kind)) do
+	for key, row in pairs(self:_catalog(kind, state[field] or {})) do
 		if type(key) == "string" and type(row) == "table" and owned(state, field, key) then
 			local multiplier, price = number(row.Multiplier or row.multiplier), number(row.Price or row.price)
 			if bestKey == nil or multiplier > bestMultiplier or (multiplier == bestMultiplier and (price > bestPrice or (price == bestPrice and key > bestKey))) then
@@ -1491,13 +1731,15 @@ function Runtime:_buyItems(generation: number)
 	local candidateVariant: string? = nil
 	local candidatePrice = 0
 	local availableWins = number(self:_state().Wins)
+	if not self._active or self._workers.items ~= generation then return end
 	local selected = {}
 	for _, variant in ipairs(self._selectedItemVariants) do selected[variant] = true end
 	local selectedInStock = false
 	for slot, stock in pairs(stocks) do
 		local variant = if slot == "Mysterious" then shop.mysteriousRarity else slot
 		local price = prices[variant]
-		if type(variant) == "string" and selected[variant] and number(stock) > 0 then
+		local purchased = if type(shop.purchases) == "table" then number(shop.purchases[slot]) else 0
+		if type(variant) == "string" and selected[variant] and number(stock) - purchased > 0 then
 			selectedInStock = true
 			if number(price) > candidatePrice and availableWins >= number(price) then
 				candidate, candidateVariant, candidatePrice = slot, variant, number(price)
@@ -1513,6 +1755,7 @@ function Runtime:_buyItems(generation: number)
 		return
 	end
 	local beforeState = self:_state()
+	if not self._active or self._workers.items ~= generation then return end
 	if type(beforeState.Items) ~= "table" then self._status.items = "Waiting for inventory state" return end
 	if self._flags.autoWins or not self:_settleCheckpointPending() then
 		self._status.items = "Paused while Auto Wins is active"
@@ -1608,12 +1851,14 @@ end
 function Runtime:_runEquipItems(generation: number)
 	while self._active and self._flags.autoEquipItems and self._workers.equipItems == generation do
 		local before = itemEquipFingerprint(self:_state())
+		if not self._active or self._workers.equipItems ~= generation then return end
 		if before == nil then
 			self._status.equipItems = "Waiting for inventory state"
 		elseif before == self._lastItemEquipFingerprint then
 			self._status.equipItems = "Equip Best confirmed"
 		else
 			local remote = self:_itemActionRemote()
+			if not self._active or self._workers.equipItems ~= generation then return end
 			if remote == nil or remote.OnClientEvent == nil or type(remote.FireServer) ~= "function" then
 				self._flags.autoEquipItems = false
 				self:_stop("equipItems")
@@ -1807,7 +2052,8 @@ function Runtime:_runKeys(generation: number)
 						root.CFrame = key.CFrame
 						local elapsed, collected = 0, false
 						while elapsed < KEY_CONTACT_TIMEOUT do
-							if key.Parent ~= specialKeys or key:GetAttribute("Collected") == true then collected = true break end
+							if key:GetAttribute("Collected") == true then collected = true break end
+							if key.Parent ~= specialKeys then break end
 							if not self:_waitCurrent("keys", generation, 0.1) then return false end
 							elapsed += 0.1
 						end
@@ -1888,20 +2134,24 @@ end
 function Runtime:_runFuse(generation: number)
 	while self._active and self._flags.autoFuse and self._workers.fuse == generation do
 		local loaded, items = pcall(function() return self:_itemsFeatureConfig() end)
+		if not self._active or self._workers.fuse ~= generation then return end
 		local mergeCount = loaded and number(items.MERGE_COUNT) or 0
 		if mergeCount ~= 5 then self:_stopAutoFuse("Unsupported fuse contract") return end
 		local groups = fuseGroups(self:_state(), items)
+		if not self._active or self._workers.fuse ~= generation then return end
 		local target
 		for _, label in ipairs(self._selectedFuseItems) do
 			if groups[label] and groups[label].tier < number(items.MAX_TIER) and groups[label].count >= mergeCount then target = groups[label] break end
 		end
 		if target == nil then self:_stopAutoFuse("Selected fuse item is stale") return end
 		local before = self:_state()
+		if not self._active or self._workers.fuse ~= generation then return end
 		local beforeGroups = fuseGroups(before, items)
 		local beforeCount = type(before.Items) == "table" and #before.Items or 0
 		local beforeRemainder = inventoryRemainder(before.Items, items, target.key, target.tier)
 		if beforeRemainder == nil then self:_stopAutoFuse("Inventory state unavailable") return end
 		local remote = self:_itemActionRemote()
+		if not self._active or self._workers.fuse ~= generation then return end
 		if remote == nil or remote.OnClientEvent == nil or type(remote.FireServer) ~= "function" then
 			self:_stopAutoFuse("ItemAction unavailable")
 			return
@@ -2029,6 +2279,7 @@ end
 
 function Runtime:_gloveStep(generation: number)
 	local battle = self:_slapBattle()
+	if not self._active or self._workers.glove ~= generation then return end
 	if not self:_battleActive(battle) then self._status.glove = "Waiting for active battle" return end
 	local root = self:_root()
 	if root == nil then self._status.glove = "Character unavailable" return end
