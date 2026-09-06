@@ -182,14 +182,14 @@ function Menu.new(Library: any, controller: any, options: any?): (any?, any?)
 		controls.AutoWins = autoWins:Toggle({
 			Id = "auto-wins",
 			Title = "Auto Wins",
-			Description = "Max Stage buys its matching checkpoint, waits the plate timer, then crosses at 300 studs/s with reward-interval safety.",
+			Description = "World 3 uses checkpoints. Galaxy 2 / World 1 uses tweens; Stage 10 waits at SAS10, then teleports to SAS11.",
 			Default = initial.autoWins == true,
 			Persist = false,
 			Callback = function(value: boolean) action("SetAutoWins", value) end,
 			Options = {
 				Id = "win-strategies",
 				Title = "Strategies",
-				Description = "Run Stage 1 instantly or collect the highest direct stage unlocked by the live World 3 level gates.",
+				Description = "Run Stage 1 instantly or collect the highest supported stage unlocked by the current world's level gates.",
 				Choices = copyArray(STRATEGIES),
 				Default = copyArray(initial.winStrategies),
 				MaxSelections = 1,

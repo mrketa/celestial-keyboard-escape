@@ -1,7 +1,7 @@
 --!strict
 
 local MODULE_ROOT = "keyboard-escape/"
-local PLACE_ID = 93411036959889
+local SUPPORTED_PLACES = { [93411036959889] = true, [75012837977315] = true }
 local EXPORT_NAME = "KeyboardEscapeAutoFarm"
 local INITIALIZATION_NAME = EXPORT_NAME .. "Initialization"
 local UI_BUNDLES = {
@@ -59,7 +59,7 @@ if not environmentOk or type(environment) ~= "table" then
 	entryError("environment_unavailable")
 end
 
-if game.PlaceId ~= PLACE_ID then
+if not SUPPORTED_PLACES[game.PlaceId] then
 	entryError("unsupported_place")
 end
 

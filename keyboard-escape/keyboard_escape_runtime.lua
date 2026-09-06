@@ -25,6 +25,24 @@ local ANTI_FLING_HORIZONTAL_SPEED = 80
 local ANTI_FLING_VERTICAL_SPEED = 110
 local ANTI_FLING_ANGULAR_SPEED = 60
 local ANTI_FLING_RECOVERY_DISTANCE = 12
+local GALAXY_2_PLACE_ID = 75012837977315
+local GALAXY_2_MAX_STAGE = 10
+local GALAXY_2_ROUTE_SPEED = 300
+local GALAXY_2_SAFETY_MARGIN = 0.25
+-- Streaming hints are never movement targets; routes use observed SAS parts.
+local GALAXY_2_SAS_STREAM_HINTS = {
+	Vector3.new(-296.392, 375.870, -759.908),
+	Vector3.new(-129.005, 375.870, -759.908),
+	Vector3.new(102.522, 375.870, -759.908),
+	Vector3.new(463.522, 375.870, -759.908),
+	Vector3.new(781.772, 375.870, -759.908),
+	Vector3.new(1142.744, 375.870, -759.908),
+	Vector3.new(1561.118, 375.870, -759.908),
+	Vector3.new(2458.399, 375.870, -759.908),
+	Vector3.new(2832.425, 851.875, -759.908),
+	Vector3.new(3727.398, 742.534, -759.908),
+	Vector3.new(4512.976, 743.075, -759.908),
+}
 local MAX_DIRECT_STAGE = 14
 local DIRECT_ROUTES = {
 	[3] = { checkpoint = 1, minNet = 200000000, plate = "WinBlock34", staging = Vector3.new(-1462.791, 214.103, 333.030) },
@@ -140,6 +158,12 @@ local function child(parent: Instance, name: string): Instance?
 	return parent:FindFirstChild(name)
 end
 
+local function galaxy2HazardRoot(instance: Instance): boolean
+	local name = instance.Name
+	return (instance:IsA("BasePart") and (name == "Lava" or name:match("^%s*(.-)%s*$") == "KillPart" or name == "InvisibleKillWall"))
+		or (instance:IsA("Model") and (name == "EyesLaser" or name == "ReversePad"))
+end
+
 local function stageTeleportLocked(storage: Instance): boolean
 	local configs = child(storage, "CurrentGameplayConfigs")
 	local restrictions = configs and child(configs, "GameplayRestrictions")
@@ -199,6 +223,7 @@ function Runtime.new(options: { [string]: any }?): any
 	options = options or {}
 	local self = setmetatable({}, Runtime)
 	self._options = options
+	self._galaxy2 = (options.placeId or game.PlaceId) == GALAXY_2_PLACE_ID
 	self._players = options.players or Players
 	self._storage = options.replicatedStorage or ReplicatedStorage
 	self._world = options.workspace or workspace
@@ -369,7 +394,7 @@ end
 
 function Runtime:_config(): any
 	if type(self._options.getWorldConfig) == "function" then return self._options.getWorldConfig() or {} end
-	return require(self._storage.Config.Worlds.World3)
+	return require(if self._galaxy2 then self._storage.Config.Worlds.World4 else self._storage.Config.Worlds.World3)
 end
 
 function Runtime:_winsMultiplier(): number
@@ -474,6 +499,17 @@ end
 function Runtime:ResolveMaxStage(): (number, number, number)
 	local level = number(self:_state().Level)
 	local requirements = self:_config().STAGE_RECOMMENDED_LEVELS or {}
+	if self._galaxy2 then
+		local resolvedStage = 1
+		for stage = 2, GALAXY_2_MAX_STAGE do
+			local requirement = number(requirements[stage])
+			if requirement <= 0 or level < requirement then
+				return resolvedStage, GALAXY_2_MAX_STAGE, requirement
+			end
+			resolvedStage = stage
+		end
+		return resolvedStage, GALAXY_2_MAX_STAGE, 0
+	end
 	local resolvedStage = 3
 	for stage = 4, MAX_DIRECT_STAGE do
 		local route = DIRECT_ROUTES[stage]
@@ -640,10 +676,10 @@ function Runtime:RunStage1(timing: any?): boolean
 	if not self._active or (timing ~= nil and not self:_stage1Current(timing)) then return false end
 	if not self:_releaseOutgoingMovement("wins") then return false end
 	if not self._active or (timing ~= nil and not self:_stage1Current(timing)) then return false end
-	local structure = child(self._world, "Structure")
+	local structure = child(self._world, if self._galaxy2 then "Stages" else "Structure")
 	local stage = structure and child(structure, "Stage1")
 	local sas = stage and child(stage, "SAS")
-	local plate = sas and child(sas, "WinBlock32")
+	local plate = sas and child(sas, if self._galaxy2 then "WinBlock1" else "WinBlock32")
 	if plate == nil or not plate:IsA("BasePart") then self._status.wins = "Stage 1 plate unavailable" return false end
 	local root = self:_root()
 	if not self._active or (timing ~= nil and not self:_stage1Current(timing)) then return false end
@@ -660,45 +696,77 @@ end
 function Runtime:_releaseMovementState(state: any): boolean
 	if state == nil or self._movementRestore ~= state then return false end
 	self._movementRestore = nil
-	pcall(function()
-		state.humanoid.AutoRotate = state.autoRotate
-		state.humanoid.WalkSpeed = state.walkSpeed
-	end)
+	if state.collisionConnection then state.collisionConnection:Disconnect() end
+	if state.collisionParts then
+		for part, canCollide in pairs(state.collisionParts) do
+			pcall(function() part.CanCollide = canCollide end)
+		end
+	end
+	if state.managesHumanoid then
+		pcall(function()
+			state.humanoid.AutoRotate = state.autoRotate
+			state.humanoid.WalkSpeed = state.walkSpeed
+		end)
+	end
 	return true
 end
 
-function Runtime:_moveTo(position: Vector3, generation: number, speed: number?, expectedRoot: BasePart?, timing: any?): boolean
+function Runtime:_moveTo(position: Vector3, generation: number, speed: number?, expectedRoot: BasePart?, timing: any?, holdTeleportLabel: string?): boolean
 	local root = self:_root()
 	if not self._active or self._workers.wins ~= generation or (timing ~= nil and not self:_directCurrent(timing)) then return false end
 	if root == nil or root.Anchored or self._movementRestore ~= nil or (expectedRoot ~= nil and root ~= expectedRoot) then return false end
 	local character = root.Parent
 	if character == nil then return false end
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if humanoid == nil then return false end
+	if humanoid == nil or (timing ~= nil and timing.tweenOnly and humanoid.Health <= 0) then return false end
 	local start = root.CFrame
 	local target = CFrame.new(position) * start.Rotation
 	local distance = (start.Position - position).Magnitude
 	local requestedSpeed = if number(speed) > 0 then number(speed) else ROUTE_SPEED
 	local duration = math.max(0.001, distance / math.min(requestedSpeed, MAX_ROUTE_SPEED))
 	local previousAutoRotate, previousWalkSpeed = humanoid.AutoRotate, humanoid.WalkSpeed
-	local movementState = { humanoid = humanoid, autoRotate = previousAutoRotate, walkSpeed = previousWalkSpeed }
+	local movementState: any = {
+		humanoid = humanoid, autoRotate = previousAutoRotate, walkSpeed = previousWalkSpeed,
+		managesHumanoid = timing == nil or not timing.tweenOnly,
+	}
 	self._movementRestore = movementState
+	if timing ~= nil and timing.tweenOnly then
+		local collisionParts = {}
+		movementState.collisionParts = collisionParts
+		local function disableCollision(instance: Instance)
+			if not instance:IsA("BasePart") or not self:_directCurrent(timing) or self._movementRestore ~= movementState then return end
+			if collisionParts[instance] == nil then collisionParts[instance] = instance.CanCollide end
+			instance.CanCollide = false
+		end
+		movementState.collisionConnection = character.DescendantAdded:Connect(disableCollision)
+		for _, instance in ipairs(character:GetDescendants()) do disableCollision(instance) end
+	end
+	if not self._active or self._workers.wins ~= generation or self._movementRestore ~= movementState
+		or (timing ~= nil and not self:_directCurrent(timing))
+		or (holdTeleportLabel ~= nil and (root.Anchored or root.Parent ~= character or humanoid.Parent ~= character or humanoid.Health <= 0)) then
+		self:_releaseMovementState(movementState)
+		return false
+	end
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
-	humanoid.AutoRotate = false
-	humanoid.WalkSpeed = 0
-	humanoid.Jump = false
-	humanoid:Move(Vector3.zero, false)
+	if movementState.managesHumanoid then
+		humanoid.AutoRotate = false
+		humanoid.WalkSpeed = 0
+		humanoid.Jump = false
+		humanoid:Move(Vector3.zero, false)
+	end
 
 	local created, tween = pcall(function()
 		return self._tweenService:Create(
 			root,
 			TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
-			{ CFrame = target }
+			{ CFrame = if holdTeleportLabel ~= nil then start else target }
 		)
 	end)
 	if not created or tween == nil or not self._active or self._workers.wins ~= generation
-		or (timing ~= nil and not self:_directCurrent(timing)) then
+		or (timing ~= nil and not self:_directCurrent(timing))
+		or (holdTeleportLabel ~= nil and (self._movementRestore ~= movementState or root.Anchored
+			or root.Parent ~= character or humanoid.Parent ~= character or humanoid.Health <= 0)) then
 		self:_releaseMovementState(movementState)
 		return false
 	end
@@ -712,36 +780,84 @@ function Runtime:_moveTo(position: Vector3, generation: number, speed: number?, 
 
 	local started = self._clock()
 	local arrived = false
+	local previousPosition, previousSampleAt = start.Position, started
 	while self._clock() - started <= duration + TWEEN_SETTLE_TIMEOUT do
 		local currentRoot = self:_root()
 		if currentRoot ~= root or not self._active or self._workers.wins ~= generation
-			or (timing ~= nil and not self:_directCurrent(timing)) then break end
-		local remaining = (position - root.Position).Magnitude
-		if remaining <= MOVE_ARRIVAL_RADIUS or (self._clock() - started >= duration and remaining <= 2) then
-			arrived = true
-			break
+			or (timing ~= nil and not self:_directCurrent(timing))
+			or (holdTeleportLabel ~= nil and (self._movementRestore ~= movementState or self._moveTween ~= tween
+				or root.Anchored or root.Parent ~= character or humanoid.Parent ~= character or humanoid.Health <= 0)) then break end
+		if timing ~= nil and timing.tweenOnly and timing.contactWins ~= nil then
+			local sampledAt = self._clock()
+			local sampledPosition = root.Position
+			local expectedTravel = math.min(requestedSpeed, MAX_ROUTE_SPEED) * math.max(0, sampledAt - previousSampleAt)
+			-- Native plate handling can reset the pose before Wins replicates.
+			-- Stop this tween immediately; only the reward observer may confirm it.
+			if (sampledPosition - previousPosition).Magnitude > math.max(50, expectedTravel + 20) then break end
+			previousPosition, previousSampleAt = sampledPosition, sampledAt
+			local currentWins = number(self:_state().Wins)
+			if not self:_directCurrent(timing) then break end
+			if currentWins > timing.contactWins then
+				timing.rewardAt = self._clock()
+				arrived = true
+				break
+			end
 		end
-		if root.Anchored then break end
-		humanoid.AutoRotate = false
-		humanoid.WalkSpeed = 0
-		humanoid.Jump = false
-		humanoid:Move(Vector3.zero, false)
+		if holdTeleportLabel ~= nil then
+			-- Spend the original distance/speed budget at the source, even if
+			-- the stationary tween reports completion or the target is close.
+			if self._clock() - started >= duration then arrived = true break end
+		else
+			local remaining = (position - root.Position).Magnitude
+			if remaining <= MOVE_ARRIVAL_RADIUS or (self._clock() - started >= duration and remaining <= 2) then
+				arrived = true
+				break
+			end
+		end
+		if root.Anchored or (timing ~= nil and timing.tweenOnly and humanoid.Health <= 0) then break end
+		if movementState.collisionParts then
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+			for part, canCollide in pairs(movementState.collisionParts) do
+				if part:IsDescendantOf(character) then
+					part.CanCollide = false
+				else
+					pcall(function() part.CanCollide = canCollide end)
+					movementState.collisionParts[part] = nil
+				end
+			end
+		end
+		if movementState.managesHumanoid then
+			humanoid.AutoRotate = false
+			humanoid.WalkSpeed = 0
+			humanoid.Jump = false
+			humanoid:Move(Vector3.zero, false)
+		end
 		self._runService.Heartbeat:Wait()
 	end
 	if self._moveTween == tween then self._moveTween = nil end
 	pcall(function() tween:Cancel() end)
 	local ownedMovement = self:_releaseMovementState(movementState)
-	if ownedMovement then humanoid:Move(Vector3.zero, false) end
+	if ownedMovement and movementState.managesHumanoid then humanoid:Move(Vector3.zero, false) end
 	if self:_root() ~= root or not self._active or self._workers.wins ~= generation or not arrived
-		or (timing ~= nil and not self:_directCurrent(timing)) then return false end
+		or (timing ~= nil and not self:_directCurrent(timing))
+		or (holdTeleportLabel ~= nil and (not ownedMovement or self._moveTween ~= nil or self._movementRestore ~= nil or root.Anchored
+			or root.Parent ~= character or humanoid.Parent ~= character or humanoid.Health <= 0)) then return false end
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
-	root.CFrame = target
+	if holdTeleportLabel ~= nil then
+		-- The stationary tween is cancelled and ownership rechecked before
+		-- this sole jump; the direct-write helper refreshes God Mode's stable pose.
+		self:_writeDirectPosition(root, position, holdTeleportLabel)
+		return true
+	end
+	if timing == nil or not timing.tweenOnly then root.CFrame = target end
 	self:_refreshStablePose(root)
 	return true
 end
 
 function Runtime:_isObstacle(instance: Instance): boolean
+	if self._galaxy2 then return false end
 	local current: Instance? = instance
 	while current and current ~= self._world do
 		local parent = current.Parent
@@ -777,6 +893,18 @@ function Runtime:_neutralizeObstacle(instance: Instance)
 end
 
 function Runtime:_isObstacleRoot(instance: Instance): boolean
+	if self._galaxy2 then
+		if not galaxy2HazardRoot(instance) then return false end
+		local current = instance.Parent
+		while current and current ~= self._world do
+			if current.Name == "Stages" and current.Parent == self._world then return true end
+			-- Detach the outer hazard only, so nested parts keep their parent
+			-- and native touch connections throughout removal and restoration.
+			if galaxy2HazardRoot(current) then return false end
+			current = current.Parent
+		end
+		return false
+	end
 	local parent = instance.Parent
 	if instance.Name == "NPC_LolMonster" and parent == self._world then return true end
 	if parent and parent.Name == "NPC & Piege" and instance.Name == "NPC_Zone5" then return true end
@@ -832,6 +960,10 @@ function Runtime:SetRemoveObstacles(enabled: any): boolean
 		end
 		if hazards then
 			for _, descendant in ipairs(hazards:GetDescendants()) do self:_neutralizeObstacle(descendant) end
+		end
+		local stages = self._galaxy2 and child(self._world, "Stages")
+		if stages then
+			for _, descendant in ipairs(stages:GetDescendants()) do self:_detachObstacleRoot(descendant) end
 		end
 		self._obstacleConnection = self._world.DescendantAdded:Connect(function(descendant)
 			if not self._flags.removeObstacles then return end
@@ -927,6 +1059,186 @@ function Runtime:_waitDirectReady(timing: any, pending: any, stage: number): boo
 		self._status.wins = string.format("Stage %d gate %.2fs", stage, math.ceil(remaining * 100) / 100)
 		self._wait(math.min(DIRECT_WAIT_STEP, remaining))
 	end
+	return false
+end
+
+function Runtime:_runGalaxy2Tween(generation: number): boolean
+	local timing = { generation = generation, strategies = self._strategies, root = self:_root(), tweenOnly = true }
+	if not self:_directCurrent(timing) then return false end
+	if not self:_releaseOutgoingMovement("wins") or not self:_directCurrent(timing) or self._buyItemsPending ~= nil then return false end
+	while self:_directCurrent(timing) do
+		local cooldown = self._nextDirectWinAt - self._clock()
+		if cooldown <= 0 then break end
+		self._status.wins = string.format("Max Stage retry delay %.0fs", math.ceil(cooldown))
+		self._wait(math.min(DIRECT_WAIT_STEP, cooldown))
+	end
+	if not self:_directCurrent(timing) then return false end
+	local targetStage = self:ResolveMaxStage()
+	if not self:_directCurrent(timing) then return false end
+	local plateName = "WinBlock" .. targetStage
+	local loaded, validation = pcall(self._winValidationConfig, self)
+	if not self:_directCurrent(timing) then return false end
+	local minima = if loaded and type(validation) == "table" then validation.WIN_MIN_TIMES else nil
+	local minimum = if targetStage == 1 then 0 elseif type(minima) == "table" then minima[plateName] else nil
+	local debounce = if loaded and type(validation) == "table" then validation.WIN_DEBOUNCE_DELAY else nil
+	if type(minimum) ~= "number" or not (minimum >= 0 and minimum < math.huge)
+		or type(debounce) ~= "number" or not (debounce > 0 and debounce < math.huge) then
+		self._status.wins = string.format("Waiting for Stage %d validation configuration", targetStage)
+		return false
+	end
+	local buffer = self:_directBuffer(timing)
+	if buffer == nil then return false end
+	buffer = math.max(buffer, GALAXY_2_SAFETY_MARGIN)
+	local zones = self._galaxy2ZonePositions
+	if zones == nil then
+		zones = {}
+		self._galaxy2ZonePositions = zones
+	end
+	local function captureZones(): boolean
+		local zonesRoot = child(self._world, "Zones")
+		local stageZones = zonesRoot and child(zonesRoot, "Stages")
+		local seen = {}
+		if stageZones then
+			for _, instance in ipairs(stageZones:GetDescendants()) do
+				if instance:IsA("BasePart") then
+					local sas = instance:GetAttribute("SAS")
+					if type(sas) == "number" and sas == math.floor(sas) and sas >= 1 and sas <= targetStage + 1 then
+						if seen[sas] then
+							self._status.wins = string.format("SAS %d route ambiguous", sas)
+							return false
+						end
+						seen[sas] = instance.Position
+					end
+				end
+			end
+		end
+		for sas, position in pairs(seen) do zones[sas] = position end
+		return true
+	end
+	if not captureZones() or not self:_directCurrent(timing) then return false end
+	local player = self._players.LocalPlayer
+	for sas = 1, targetStage + 1 do
+		if zones[sas] == nil then
+			self._status.wins = string.format("Streaming SAS %d route", sas)
+			local streamed = pcall(function() player:RequestStreamAroundAsync(GALAXY_2_SAS_STREAM_HINTS[sas], 8) end)
+			if not self:_directCurrent(timing) then return false end
+			if not streamed then self._status.wins = string.format("SAS %d streaming failed", sas) return false end
+			if not captureZones() or not self:_directCurrent(timing) then return false end
+			if zones[sas] == nil then self._status.wins = string.format("SAS %d route unavailable", sas) return false end
+		end
+	end
+	local function findPlate(): BasePart?
+		local stages = child(self._world, "Stages")
+		local stage = stages and child(stages, "Stage" .. targetStage)
+		local sas = stage and child(stage, "SAS")
+		local found = sas and child(sas, plateName)
+		return if found and found:IsA("BasePart") then found else nil
+	end
+	local plate = findPlate()
+	if plate == nil then
+		local streamed = pcall(function() player:RequestStreamAroundAsync(zones[targetStage + 1], 8) end)
+		if not self:_directCurrent(timing) then return false end
+		if not streamed then self._status.wins = string.format("Stage %d streaming failed", targetStage) return false end
+		plate = findPlate()
+	end
+	if plate == nil then
+		self._status.wins = string.format("Stage %d plate unavailable", targetStage)
+		return false
+	end
+	local root = timing.root
+	local humanoid = root.Parent and root.Parent:FindFirstChildOfClass("Humanoid")
+	if root.Anchored or humanoid == nil or humanoid.Health <= 0 then
+		self._status.wins = "Character unavailable"
+		return false
+	end
+	local points = {}
+	local previousPosition, courseDuration = root.Position, 0
+	local function append(position: Vector3, speed: number, holdTeleportLabel: string?)
+		if #points > 0 then courseDuration += (position - previousPosition).Magnitude / speed end
+		previousPosition = position
+		table.insert(points, { position = position, speed = speed, holdTeleportLabel = holdTeleportLabel })
+	end
+	for zoneId = 1, targetStage + 1 do
+		local center = zones[zoneId]
+		if zoneId == 9 then
+			-- Stage 8's left kill wall starts above SAS 8, while its right
+			-- wall opens at SAS 9 height. Enter low, then rise between them.
+			local previousCenter = zones[8]
+			local midpointX = (previousCenter.X + center.X) / 2
+			append(Vector3.new(midpointX, previousCenter.Y, previousCenter.Z), GALAXY_2_ROUTE_SPEED)
+			append(Vector3.new(midpointX, center.Y, center.Z), GALAXY_2_ROUTE_SPEED)
+		end
+		-- Only the final SAS leg holds then jumps. Its nominal
+		-- distance still contributes to the same course-wide timing scale.
+		append(center, GALAXY_2_ROUTE_SPEED, if targetStage == 10 and zoneId == 11 then "SAS10->SAS11" else nil)
+		-- The native zone tracker samples at 0.1s. Keep tweening inside each
+		-- SAS for 0.2s rather than pausing in midair or skipping its sample.
+		append(center + Vector3.new(0, 0, 1), 5)
+	end
+	append((plate.CFrame * CFrame.new(0, 1.5, 0)).Position, GALAXY_2_ROUTE_SPEED)
+	-- Exclude the SAS 1 approach from the configured course-time budget,
+	-- then scale remaining legs using the configured minimum and debounce.
+	local scale = math.min(1, courseDuration / (math.max(minimum, debounce) + buffer))
+	if not self:_directCurrent(timing) then return false end
+	self._routeInvalidated = false
+	self._movementOwner = "wins"
+	local function releaseMovement()
+		if self._workers.wins == generation and self._movementOwner == "wins" then self._movementOwner = nil end
+	end
+	for index, point in ipairs(points) do
+		if index == #points then
+			plate = findPlate()
+			if plate == nil then
+				local streamed = pcall(function() player:RequestStreamAroundAsync(zones[targetStage + 1], 8) end)
+				if not self:_directCurrent(timing) then releaseMovement() return false end
+				if streamed then plate = findPlate() end
+			end
+			if plate == nil then
+				releaseMovement()
+				self._nextDirectWinAt = math.max(self._nextDirectWinAt, self._clock() + debounce + buffer)
+				self._status.wins = string.format("Stage %d plate unavailable", targetStage)
+				return false
+			end
+			point.position = (plate.CFrame * CFrame.new(0, 1.5, 0)).Position
+			timing.contactWins = number(self:_state().Wins)
+			if not self:_directCurrent(timing) then releaseMovement() return false end
+		end
+		self._status.wins = string.format("Stage %d %s %d/%d", targetStage, if point.holdTeleportLabel then "hold + TP" else "tween", index, #points)
+		local speed = if index == 1 then point.speed else point.speed * scale
+		local moved = self:_moveTo(point.position, generation, speed, root, timing, point.holdTeleportLabel)
+		if not self:_directCurrent(timing) then releaseMovement() return false end
+		if not moved and index < #points then
+			releaseMovement()
+			self._nextDirectWinAt = math.max(self._nextDirectWinAt, self._clock() + debounce + buffer)
+			self._status.wins = string.format("Stage %d route interrupted; safe retry scheduled", targetStage)
+			return false
+		end
+	end
+	-- A native payout can reset the root before the last tween samples its
+	-- arrival. Never move back: only a positive authoritative Wins delta wins.
+	local rewardDeadline = self._clock() + DIRECT_REWARD_TIMEOUT
+	while self:_directCurrent(timing) do
+		local currentWins = number(self:_state().Wins)
+		if not self:_directCurrent(timing) then releaseMovement() return false end
+		local observedAt = self._clock()
+		if observedAt > rewardDeadline then break end
+		if timing.rewardAt ~= nil or currentWins > timing.contactWins then
+			self._lastDirectRewardAt = timing.rewardAt or observedAt
+			self._nextDirectWinAt = 0
+			self:_refreshStablePose(root)
+			releaseMovement()
+			self._status.wins = string.format("Stage %d win confirmed by route", targetStage)
+			return true
+		end
+		local remaining = rewardDeadline - observedAt
+		if remaining <= 0 then break end
+		self._status.wins = string.format("Stage %d observing reward", targetStage)
+		self._wait(math.min(0.02, remaining))
+	end
+	releaseMovement()
+	if not self:_directCurrent(timing) then return false end
+	self._nextDirectWinAt = math.max(self._nextDirectWinAt, self._clock() + debounce + buffer)
+	self._status.wins = string.format("Stage %d reward unconfirmed; safe retry scheduled", targetStage)
 	return false
 end
 
@@ -1239,7 +1551,7 @@ function Runtime:_runWins(generation: number)
 						if ran then self._status.wins = if confirmed then "Win confirmed" else "Win not confirmed" end
 					end
 				else
-					directConfirmed = self:_runValidatedDirect(generation)
+					directConfirmed = if self._galaxy2 then self:_runGalaxy2Tween(generation) else self:_runValidatedDirect(generation)
 				end
 			end
 		end
@@ -1282,10 +1594,39 @@ function Runtime:_restoreGodMode()
 	self._previousPosition = nil
 end
 
+function Runtime:_nativeGravityActive(): boolean
+	if not self._galaxy2 then return false end
+	if not self._gravityControllerLoaded then
+		local controller = self._options.gravityController
+		if controller == nil then
+			local loaded, resolved = pcall(function()
+				local framework = child(self._storage, "_FRAMEWORK")
+				local features = framework and child(framework, "Features")
+				local clientOnly = features and child(features, "ClientOnly")
+				local module = clientOnly and child(clientOnly, "GravityController")
+				return module and require(module)
+			end)
+			if loaded then controller = resolved end
+		end
+		self._gravityController = controller
+		self._gravityControllerLoaded = true
+	end
+	local controller = self._gravityController
+	if type(controller) ~= "table" or type(controller.isActive) ~= "function" then return false end
+	local readActive, active = pcall(controller.isActive)
+	return readActive and active == true
+end
+
 function Runtime:_attachGodMode(character: Model?)
 	if not self._active or not self._flags.godMode or character == nil then return end
 	self:_restoreGodMode()
 	self._godCharacter = character
+	if self._galaxy2 then
+		-- Resolve the optional native module before installing heartbeat
+		-- listeners, so a yielding require cannot misclassify its active rig.
+		self:_nativeGravityActive()
+		if not self._active or not self._flags.godMode or self._godCharacter ~= character then return end
+	end
 	local function attachRoot()
 		if not self._active or not self._flags.godMode or self._godCharacter ~= character then return end
 		local root = character:FindFirstChild("HumanoidRootPart")
@@ -1310,11 +1651,16 @@ function Runtime:_attachGodMode(character: Model?)
 		if root == nil then self._status.godMode = "Waiting for character root" return end
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		if humanoid == nil then self._status.godMode = "Waiting for humanoid" return end
+		local nativeGravityActive = self._galaxy2 and self:_nativeGravityActive()
+		if not self._active or not self._flags.godMode or self._godCharacter ~= character
+			or self._stableRoot ~= root or root.Parent ~= character then return end
 		local cframe = root.CFrame
 		local linear = root.AssemblyLinearVelocity
 		local angular = root.AssemblyAngularVelocity
 		local state = humanoid:GetState()
-		local ragdolled = humanoid.PlatformStand or state == Enum.HumanoidStateType.Physics or state == Enum.HumanoidStateType.Ragdoll
+		local ragdolled = state == Enum.HumanoidStateType.Ragdoll
+			or (self._galaxy2 and state == Enum.HumanoidStateType.FallingDown)
+			or (not nativeGravityActive and (humanoid.PlatformStand or state == Enum.HumanoidStateType.Physics))
 		if ragdolled then
 			humanoid.PlatformStand = false
 			humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
