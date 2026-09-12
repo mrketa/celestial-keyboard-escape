@@ -1,10 +1,10 @@
 --!strict
 
-local BASE_URL = "https://raw.githubusercontent.com/mrketa/celestial-keyboard-escape/0fb144db5e16c418d37fadc6f8fc3d2d2475119a/"
+local BASE_URL = "https://raw.githubusercontent.com/mrketa/celestial-keyboard-escape/8d8c3fab97f73e3c327e4d65ad046282e04727d6/"
 local ENTRY_PATH = "keyboard-escape/autofarm.lua"
 local MODULES = {
 	["keyboard-escape/autofarm.lua"] = "fc8f0c8c672bea06eb6e50b9791e5168f21c6aecbb16d10e1721044128111136",
-	["keyboard-escape/keyboard_escape_runtime.lua"] = "856425cab14d34570f95a14045ab15f2cf3e12590948f07a43f5d5bc66863c85",
+	["keyboard-escape/keyboard_escape_runtime.lua"] = "b9bd4aa6ef7ad6c5a6b3bed05ad4db2acefcee66a9b9480cdf760658810f220f",
 	["keyboard-escape/admin_event_collectors.lua"] = "57329b8a28f3bde9615f92a51588b394727f402c86363106a3ad28c5083bbc34",
 	["keyboard-escape/keyboard_escape_menu.lua"] = "6861561f6b84bfeee63dd316c4e4e2f0661032023b36a11b3781661f70cb220d",
 	["keyboard-escape/potassium-ui.lua"] = "83a969770b11d2573b2f13b005755fcb56caf0f91c54696004a9c0c17d13e217",
