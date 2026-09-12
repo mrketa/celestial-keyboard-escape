@@ -2318,15 +2318,17 @@ function Runtime:_releaseMovementLease(lease: any): boolean
 	if lease == nil or self._movementLease ~= lease then return false end
 	self._movementLease = nil
 	local restored = pcall(function()
-		lease.root.CFrame = lease.cframe
-		lease.root.AssemblyLinearVelocity = lease.linear
-		lease.root.AssemblyAngularVelocity = lease.angular
+		if lease.restorePose then
+			lease.root.CFrame = lease.cframe
+			lease.root.AssemblyLinearVelocity = lease.linear
+			lease.root.AssemblyAngularVelocity = lease.angular
+		end
 		lease.humanoid.AutoRotate = lease.autoRotate
 		lease.humanoid.WalkSpeed = lease.walkSpeed
 	end)
 	if restored and self._flags.godMode and self._stableRoot == lease.root then
-		self._lastStable = lease.cframe
-		self._previousPosition = lease.cframe.Position
+		self._lastStable = lease.root.CFrame
+		self._previousPosition = self._lastStable.Position
 	end
 	if self._movementOwner == lease.owner then self._movementOwner = nil end
 	return true
@@ -2353,7 +2355,7 @@ function Runtime:_awaitOutgoingMovement(owner: string): (boolean, string?)
 end
 
 
-function Runtime:_withMovementLease(owner: string, callback: (BasePart, Humanoid) -> boolean): boolean
+function Runtime:_withMovementLease(owner: string, callback: (BasePart, Humanoid) -> boolean, restorePose: boolean?): boolean
 	if not self._active or not self:_releaseOutgoingMovement(owner) or self._movementLease ~= nil then return false end
 	local root = self:_root()
 	local character = root and root.Parent
@@ -2361,6 +2363,7 @@ function Runtime:_withMovementLease(owner: string, callback: (BasePart, Humanoid
 	if root == nil or root.Anchored or humanoid == nil or humanoid.Health <= 0 then return false end
 	local lease = {
 		owner = owner, root = root, humanoid = humanoid, cframe = root.CFrame,
+		restorePose = restorePose ~= false,
 		linear = root.AssemblyLinearVelocity, angular = root.AssemblyAngularVelocity,
 		autoRotate = humanoid.AutoRotate, walkSpeed = humanoid.WalkSpeed,
 	}
@@ -2631,6 +2634,7 @@ function Runtime:_gloveStep(generation: number)
 	if root == nil then self._status.glove = "Character unavailable" return end
 	local target, player = self:_nearestGloveTarget(root)
 	if target == nil or player == nil then self._status.glove = "Waiting for opponent" return end
+	-- Stay at the attack position; only equipment and humanoid controls are temporary.
 	local worked = self:_withMovementLease("glove", function(localRoot, humanoid)
 		if not self._active or self._workers.glove ~= generation or not self:_battleActive(battle) then return false end
 		local character = localRoot.Parent
@@ -2683,7 +2687,7 @@ function Runtime:_gloveStep(generation: number)
 		end)
 		if not completed then self._status.glove = "Glove activation failed" return false end
 		return result == true
-	end)
+	end, false)
 	if not worked and self._status.glove == "Starting" then self._status.glove = "Movement unavailable" end
 end
 
